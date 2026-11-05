@@ -27,6 +27,17 @@ export const api = {
     http.post('/import/openapi', { spec, name }).then((r) => r.data),
   importWhitebox: (data: any): Promise<{ flows: FlowDsl[] }> => http.post('/import/whitebox', data).then((r) => r.data),
 
+  // Apifox MCP（直连拉取接口）
+  apifoxGetConfig: (): Promise<any> => http.get('/apifox/config').then((r) => r.data),
+  apifoxSaveConfig: (data: any): Promise<any> => http.post('/apifox/config', data).then((r) => r.data),
+  apifoxTest: (data: any): Promise<any> =>
+    http.post('/apifox/test', data, { timeout: 300000 }).then((r) => r.data),
+  apifoxInterfaces: (data: any): Promise<any> =>
+    http.post('/apifox/interfaces', data, { timeout: 600000 }).then((r) => r.data),
+  apifoxCachedInterfaces: (): Promise<any> => http.get('/apifox/interfaces').then((r) => r.data),
+  apifoxImport: (data: any): Promise<{ flows: FlowDsl[] }> =>
+    http.post('/apifox/import', data, { timeout: 600000 }).then((r) => r.data),
+
   // 总览
   getStats: (): Promise<any> => http.get('/stats').then((r) => r.data),
 }

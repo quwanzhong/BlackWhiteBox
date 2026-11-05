@@ -11,6 +11,7 @@
     "seed": "node src/seed.js --force"
   },
   "dependencies": {
+    "apifox-mcp-server": "^0.0.18",
     "axios": "^1.7.9",
     "cors": "^2.8.5",
     "express": "^4.21.2",

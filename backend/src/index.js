@@ -8,6 +8,7 @@ import { PORT, FRONTEND_DIST } from './config.js'
 import flowsRouter from './routes/flows.js'
 import executionsRouter from './routes/executions.js'
 import importRouter from './routes/import.js'
+import apifoxRouter from './routes/apifox.js'
 import statsRouter from './routes/stats.js'
 import { seedIfEmpty } from './seed.js'
 
@@ -27,6 +28,7 @@ app.use((req, _res, next) => {
 app.use('/api/flows', flowsRouter)
 app.use('/api/executions', executionsRouter)
 app.use('/api/import', importRouter)
+app.use('/api/apifox', apifoxRouter)
 app.use('/api/stats', statsRouter)
 
 app.get('/api/health', (_req, res) => {

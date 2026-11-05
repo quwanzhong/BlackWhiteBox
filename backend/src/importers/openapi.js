@@ -42,9 +42,72 @@ function paramSummary(op) {
 }
 
 /**
+ * 解析文档内部的 #/ 引用（手工导入的 OpenAPI 也可能带 $ref）。
+ * 循环引用保留 $ref，避免死循环。
+ */
+function resolveLocalRefs(node, root, stack = new Set()) {
+  if (Array.isArray(node)) return node.map((item) => resolveLocalRefs(item, root, stack))
+  if (!node || typeof node !== 'object') return node
+  if (typeof node.$ref === 'string' && node.$ref.startsWith('#/')) {
+    const ref = node.$ref
+    if (!stack.has(ref)) {
+      const parts = ref.replace(/^#\//, '').split('/').map((p) => decodeURIComponent(p).replace(/~1/g, '/').replace(/~0/g, '~'))
+      let target = root
+      for (const part of parts) {
+        if (target === null || typeof target !== 'object') { target = undefined; break }
+        target = target[part]
+      }
+      if (target !== undefined) {
+        const nextStack = new Set(stack).add(ref)
+        const resolved = resolveLocalRefs(structuredClone(target), root, nextStack)
+        const { $ref, ...rest } = node
+        const siblings = resolveLocalRefs(rest, root, nextStack)
+        if (resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
+          return { ...resolved, ...siblings }
+        }
+        return resolved
+      }
+    }
+  }
+  const out = {}
+  for (const [key, value] of Object.entries(node)) out[key] = resolveLocalRefs(value, root, stack)
+  return out
+}
+
+function normalizeVarName(name) {
+  return String(name).replace(/[^\w]/g, '_')
+}
+
+function paramInfo(op) {
+  const vars = {}
+  const requiredQuery = []
+  for (const p of op.parameters || []) {
+    if (!p?.name) continue
+    const name = normalizeVarName(p.name)
+    const value = p.example ?? p.schema?.example ?? p.schema?.default ?? ''
+    if (p.in === 'path') vars[name] = value
+    else if (p.in === 'query' && p.required) {
+      vars[name] = value
+      requiredQuery.push(name)
+    }
+  }
+  return { vars, requiredQuery }
+}
+
+function buildUrl(base, apiPath, requiredQuery) {
+  const path = apiPath.replace(/\{([^}]+)\}/g, (_, name) => `{{${normalizeVarName(name)}}}`)
+  let url = base ? `${base.replace(/\/$/, '')}${path}` : `{{baseUrl}}${path}`
+  if (requiredQuery.length) {
+    url += `?${requiredQuery.map((n) => `${n}={{${n}}}`).join('&')}`
+  }
+  return url
+}
+
+/**
  * @returns {{ name: string, type: 'blackbox', description: string, variables: object, nodes: any[], edges: any[] }}
  */
-export function parseOpenApi(spec, name) {
+export function parseOpenApi(rawSpec, name) {
+  const spec = resolveLocalRefs(rawSpec, rawSpec)
   const base = spec.servers?.[0]?.url || ''
   const entries = []
   for (const [path, item] of Object.entries(spec.paths || {})) {
@@ -56,25 +119,30 @@ export function parseOpenApi(spec, name) {
     }
   }
 
-  const nodes = entries.map(({ path, method, op }, i) => ({
-    id: `n${i + 1}`,
-    name: op.summary || op.operationId || `${method.toUpperCase()} ${path}`,
-    action: {
-      type: 'http',
-      method: method.toUpperCase(),
-      url: base ? `${base.replace(/\/$/, '')}${path}` : `{{baseUrl}}${path}`,
-      headers: { 'Content-Type': 'application/json' },
-      body: method === 'get' || method === 'delete' ? null : sampleBody(op),
-      timeout: 15000,
-    },
-    input: { params: paramSummary(op) },
-    expected: {
-      status: method === 'post' ? 201 : 200,
-      checks: [],
-    },
-    extract: {},
-    position: { x: 80 + i * 280, y: 160 },
-  }))
+  const flowVars = base ? { baseUrl: base } : {}
+  const nodes = entries.map(({ path, method, op }, i) => {
+    const { vars, requiredQuery } = paramInfo(op)
+    Object.assign(flowVars, vars)
+    return {
+      id: `n${i + 1}`,
+      name: op.summary || op.operationId || `${method.toUpperCase()} ${path}`,
+      action: {
+        type: 'http',
+        method: method.toUpperCase(),
+        url: buildUrl(base, path, requiredQuery),
+        headers: { 'Content-Type': 'application/json' },
+        body: method === 'get' || method === 'delete' ? null : sampleBody(op),
+        timeout: 15000,
+      },
+      input: { params: paramSummary(op) },
+      expected: {
+        status: method === 'post' ? 201 : 200,
+        checks: [],
+      },
+      extract: {},
+      position: { x: 80 + i * 280, y: 160 },
+    }
+  })
 
   // 默认按文档顺序连成一条线，导入后可在画布上重新编排
   const edges = nodes.slice(1).map((n, i) => ({
@@ -88,7 +156,7 @@ export function parseOpenApi(spec, name) {
     name: name || spec.info?.title || 'OpenAPI 导入流程',
     type: 'blackbox',
     description: `从 OpenAPI 导入，共 ${nodes.length} 个接口节点${base ? `（baseUrl: ${base}）` : '（未配置 baseUrl）'}`,
-    variables: base ? { baseUrl: base } : {},
+    variables: flowVars,
     nodes,
     edges,
   }

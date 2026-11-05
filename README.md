@@ -6,7 +6,7 @@
 
 | 视角 | 面向对象 | 数据来源 | 执行方式 |
 |---|---|---|---|
-| ⬛ **黑盒流程** | 后端 HTTP 接口 / 业务接口链路 | Apifox 导出的 OpenAPI JSON | axios 真实发请求，按 JSONPath 断言响应 |
+| ⬛ **黑盒流程** | 后端 HTTP 接口 / 业务接口链路 | **Apifox MCP 直连自动拉取**（备用：OpenAPI JSON 导入） | axios 真实发请求，按 JSONPath 断言响应 |
 | ⬜ **白盒流程** | Java 代码调用链（Controller → Service → Mapper） | 内置 Java 分析器扫描源码 | 逐方法人工确认代码逻辑，记录结论 |
 
 两个视角在界面上是**两套独立的流程视图**，互不干扰，但共用同一套执行引擎、动画协议和报告体系。
@@ -22,7 +22,7 @@
 - **变量提取与传递**：`extract: { token: "$.data.token" }`，后续节点用 `{{token}}` 引用，支持请求地址 / Header / Body。
 - **条件流转**：连线可写 `$.code == 0 && $.data.ok`，不满足则跳过下游分支。
 - **执行报告**：每次执行落盘，支持回放画布终态、查看请求 / 响应 / 校验明细。
-- **Apifox 导入**：粘贴或上传 OpenAPI JSON，自动生成黑盒流程草稿。
+- **Apifox MCP 直连**：填项目 ID + 访问令牌即可自动拉取接口列表，勾选后一键生成黑盒流程，无需每次导出 JSON。
 - **Java 白盒分析器**：JDK 内置解析 API 实现，零第三方依赖，输出调用链 JSON 直接导入。
 
 ---
@@ -67,12 +67,13 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 ├── backend/                   Node.js + Express + Socket.IO + axios
 │   └── src/
 │       ├── engine/            调度器、HTTP 执行器、校验器、JSONPath、会话注册表
+│       ├── apifox/            MCP 客户端（STDIO JSON-RPC）+ 文档还原 + 接口列表
 │       ├── importers/         OpenAPI（Apifox）→ 黑盒流程
-│       ├── routes/            flows / executions / import / stats
+│       ├── routes/            flows / executions / import / apifox / stats
 │       ├── store.js           JSON 文件存储（换 SQLite/PostgreSQL 只改这一层）
 │       └── seed.js            演示数据
 ├── analyzers/java-analyzer/   Java 白盒调用链分析器（零依赖，自带示例工程）
-├── docs/                      DSL 规范、执行事件协议
+├── docs/                      DSL 规范、执行事件协议、Apifox MCP 接入说明
 └── data/                      运行时数据（git 忽略）
 ```
 
@@ -80,15 +81,20 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 
 ## 3. 使用流程
 
-### 3.1 黑盒：从 Apifox 到可执行流程
+### 3.1 黑盒：直连 Apifox MCP 自动拉取（推荐）
 
-1. Apifox 项目 → **项目设置 → 导出数据 → OpenAPI / Swagger** → 导出 JSON；
-2. 黑百盒 → **数据导入** → 上传 / 粘贴 JSON → **解析预览** → 保存为黑盒流程；
-3. 画布上调整节点顺序、连线，点击节点配置：
-   - 请求地址（支持 `{{baseUrl}}`）、Header、Body；
+1. Apifox 里拿到 **项目 ID**（项目设置 → 基本设置）和 **API 访问令牌**（账号设置 → API 访问令牌）；
+2. 黑百盒 → **数据导入** → 「连接 Apifox」卡片填入 → **测试连接**；
+3. **拉取接口列表**（后端通过官方 apifox-mcp-server 实时读取，不用手动导出 JSON）；
+4. 勾选接口（支持搜索 / 方法筛选 / 全选）→ 填流程名与 baseUrl → **生成黑盒流程**；
+5. 画布上调整节点顺序、连线，点击节点配置：
+   - 请求地址（支持 `{{baseUrl}}`、路径参数自动转 `{{id}}`）、Header、Body；
    - 理想输出：期望状态码 + JSONPath 断言（`$.data.orderId exists`、`$.code eq 0`…）；
    - 变量提取：如 `token ← $.data.token`；
-4. 点击 **执行流程**，观察发光动画，结束后查看 **结果汇总**。
+6. 点击 **执行流程**，观察发光动画，结束后查看 **结果汇总**。
+
+> 详细说明（令牌安全、私有化部署、在线文档模式、常见报错）见 [docs/APIFOX.md](docs/APIFOX.md)。
+> 无法直连 MCP 时，展开「备用导入通道」手动粘贴 OpenAPI JSON，效果一致。
 
 ### 3.2 白盒：Java 调用链走查
 
@@ -148,6 +154,7 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 | 实时通信 | Socket.IO | 执行事件推送、断线重连 |
 | 后端 | Node.js + Express | 与前端同语言，单机部署简单 |
 | 黑盒执行 | axios | 纯 HTTP 接口层，毫秒级 |
+| Apifox 接入 | `apifox-mcp-server`（STDIO / JSON-RPC 2.0） | 官方 MCP Server，免导出直连项目文档 |
 | 存储 | JSON 文件（`backend/data`） | 单机零配置；`store.js` 隔离，后续可换 SQLite/PostgreSQL |
 | 白盒分析 | Java 17 + `com.sun.source` | 零依赖，`javac` 直接构建 |
 
@@ -155,6 +162,7 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 
 ## 6. 后续路线
 
+- [x] Apifox MCP 直连拉取接口（勾选生成黑盒流程）
 - [ ] 流程 DSL 版本化与导入校验
 - [ ] 环境变量 / 全局 Header / Cookie 管理
 - [ ] 断言提取联动（把提取值直接回填到断言）
@@ -169,20 +177,20 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 
 - [流程 DSL 规范](docs/DSL.md)
 - [执行事件协议与动画状态机](docs/EXECUTION.md)
+- [Apifox MCP 直连说明](docs/APIFOX.md)
 
 ## 8. 推送到 GitHub
 
-仓库已初始化为 `main` 分支并完成首次提交。先在 GitHub 新建空仓库（建议名 `heibaihe`，**不要**勾选 README / .gitignore），然后：
+仓库已初始化为 `main` 分支，远程 `origin` 已指向 `https://github.com/quwanzhong/heibaihe.git`。先在 GitHub 新建**空仓库**（建议名 `heibaihe`，**不要**勾选 README / .gitignore），然后：
 
 ```bash
-git remote add origin https://github.com/quwanzhong/heibaihe.git
 git push -u origin main
 ```
 
 如果使用 SSH：
 
 ```bash
-git remote add origin git@github.com:quwanzhong/heibaihe.git
+git remote set-url origin git@github.com:quwanzhong/heibaihe.git
 git push -u origin main
 ```
 
