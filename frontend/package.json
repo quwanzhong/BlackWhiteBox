@@ -1,0 +1,27 @@
+{
+  "name": "heibaihe-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "黑百盒测试平台 - 前端：黑盒/白盒双视图流程画布、执行发光动画、校验结果展示",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@antv/x6": "^2.18.1",
+    "@antv/x6-vue-shape": "^2.1.2",
+    "axios": "^1.7.9",
+    "element-plus": "^2.9.1",
+    "pinia": "^2.3.0",
+    "socket.io-client": "^4.8.1",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "hei-bai-he",
+  "version": "0.1.0",
+  "private": true,
+  "description": "黑百盒 —— 黑白盒测试平台（单机版）：业务流程建模、双视图流程画布、执行发光动画、输入输出匹对校验",
+  "scripts": {
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "dev": "concurrently -n 服务端,前端界面 -c blue,green \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
+    "build": "npm run build --prefix frontend",
+    "start": "npm run start --prefix backend",
+    "seed": "npm run seed --prefix backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

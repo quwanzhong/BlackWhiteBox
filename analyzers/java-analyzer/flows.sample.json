@@ -1,0 +1,86 @@
+{
+  "generator": "heibaihe-java-analyzer",
+  "version": "0.1.0",
+  "generatedAt": "2026-11-05T16:38:00.7761799+08:00",
+  "projectRoot": "samples/demo",
+  "classCount": 14,
+  "flows": [
+    {
+      "name": "POST /api/orders · OrderController#createOrder",
+      "entry": "OrderController#createOrder",
+      "nodes": [
+        {"id": "m1", "name": "OrderController#createOrder", "class": "OrderController", "package": "com.demo.order", "method": "createOrder", "signature": "createOrder(CreateOrderRequest request)", "kind": "controller", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderController.java", "line": 19, "depth": 0, "entry": true},
+        {"id": "m2", "name": "OrderService#createOrder", "class": "OrderService", "package": "com.demo.order", "method": "createOrder", "signature": "createOrder(CreateOrderRequest request)", "kind": "service", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderService.java", "line": 16, "depth": 1, "entry": false},
+        {"id": "m3", "name": "Result#ok", "class": "Result", "package": "com.demo.common", "method": "ok", "signature": "ok(T data)", "kind": "component", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/common/Result.java", "line": 8, "depth": 1, "entry": false},
+        {"id": "m4", "name": "StockService#deduct", "class": "StockService", "package": "com.demo.stock", "method": "deduct", "signature": "deduct(Long skuId, int count)", "kind": "service", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/StockService.java", "line": 14, "depth": 2, "entry": false},
+        {"id": "m5", "name": "PayService#createPayment", "class": "PayService", "package": "com.demo.pay", "method": "createPayment", "signature": "createPayment(Long userId, long amount)", "kind": "service", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/pay/PayService.java", "line": 12, "depth": 2, "entry": false},
+        {"id": "m6", "name": "OrderMapper#insert", "class": "OrderMapper", "package": "com.demo.order", "method": "insert", "signature": "insert(CreateOrderRequest request, Long paymentId)", "kind": "mapper", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderMapper.java", "line": 5, "depth": 2, "entry": false},
+        {"id": "m7", "name": "OrderService#bindCoupon", "class": "OrderService", "package": "com.demo.order", "method": "bindCoupon", "signature": "bindCoupon(Long couponId, Long orderId)", "kind": "service", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderService.java", "line": 41, "depth": 2, "entry": false},
+        {"id": "m8", "name": "InventoryMapper#selectStock", "class": "InventoryMapper", "package": "com.demo.stock", "method": "selectStock", "signature": "selectStock(Long skuId)", "kind": "mapper", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/InventoryMapper.java", "line": 5, "depth": 3, "entry": false},
+        {"id": "m9", "name": "StockAlertService#notifyLowStock", "class": "StockAlertService", "package": "com.demo.stock", "method": "notifyLowStock", "signature": "notifyLowStock(Long skuId, int remain)", "kind": "service", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/StockAlertService.java", "line": 12, "depth": 3, "entry": false},
+        {"id": "m10", "name": "InventoryMapper#updateStock", "class": "InventoryMapper", "package": "com.demo.stock", "method": "updateStock", "signature": "updateStock(Long skuId, int count)", "kind": "mapper", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/InventoryMapper.java", "line": 7, "depth": 3, "entry": false},
+        {"id": "m11", "name": "PaymentClient#request", "class": "PaymentClient", "package": "com.demo.pay", "method": "request", "signature": "request(Long userId, long amount)", "kind": "client", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/pay/PaymentClient.java", "line": 15, "depth": 3, "entry": false},
+        {"id": "m12", "name": "OrderMapper#bindCoupon", "class": "OrderMapper", "package": "com.demo.order", "method": "bindCoupon", "signature": "bindCoupon(Long couponId, Long orderId)", "kind": "mapper", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderMapper.java", "line": 11, "depth": 3, "entry": false},
+        {"id": "m13", "name": "AlertClient#sendUrgent", "class": "AlertClient", "package": "com.demo.stock", "method": "sendUrgent", "signature": "sendUrgent(Channel channel, String content)", "kind": "client", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/AlertClient.java", "line": 11, "depth": 4, "entry": false},
+        {"id": "m14", "name": "AlertClient#send", "class": "AlertClient", "package": "com.demo.stock", "method": "send", "signature": "send(Channel channel, String content)", "kind": "client", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/AlertClient.java", "line": 7, "depth": 4, "entry": false}
+      ],
+      "edges": [
+        {"from": "m1", "to": "m2", "condition": ""},
+        {"from": "m1", "to": "m3", "condition": ""},
+        {"from": "m2", "to": "m4", "condition": ""},
+        {"from": "m2", "to": "m5", "condition": ""},
+        {"from": "m2", "to": "m6", "condition": ""},
+        {"from": "m2", "to": "m7", "condition": ""},
+        {"from": "m4", "to": "m8", "condition": ""},
+        {"from": "m4", "to": "m9", "condition": "(stock < count)"},
+        {"from": "m4", "to": "m10", "condition": ""},
+        {"from": "m5", "to": "m11", "condition": ""},
+        {"from": "m7", "to": "m12", "condition": ""},
+        {"from": "m9", "to": "m13", "condition": "(remain <= 0)"},
+        {"from": "m9", "to": "m14", "condition": "(remain <= 0)"}
+      ]
+    },
+    {
+      "name": "GET /api/orders/{id} · OrderController#detail",
+      "entry": "OrderController#detail",
+      "nodes": [
+        {"id": "m1", "name": "OrderController#detail", "class": "OrderController", "package": "com.demo.order", "method": "detail", "signature": "detail(Long id)", "kind": "controller", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderController.java", "line": 25, "depth": 0, "entry": true},
+        {"id": "m2", "name": "Result#ok", "class": "Result", "package": "com.demo.common", "method": "ok", "signature": "ok(T data)", "kind": "component", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/common/Result.java", "line": 8, "depth": 1, "entry": false},
+        {"id": "m3", "name": "OrderService#detail", "class": "OrderService", "package": "com.demo.order", "method": "detail", "signature": "detail(Long id)", "kind": "service", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderService.java", "line": 24, "depth": 1, "entry": false},
+        {"id": "m4", "name": "OrderMapper#selectById", "class": "OrderMapper", "package": "com.demo.order", "method": "selectById", "signature": "selectById(Long id)", "kind": "mapper", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderMapper.java", "line": 7, "depth": 2, "entry": false},
+        {"id": "m5", "name": "StockService#queryStock", "class": "StockService", "package": "com.demo.stock", "method": "queryStock", "signature": "queryStock(Long skuId)", "kind": "service", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/StockService.java", "line": 23, "depth": 2, "entry": false},
+        {"id": "m6", "name": "InventoryMapper#selectStock", "class": "InventoryMapper", "package": "com.demo.stock", "method": "selectStock", "signature": "selectStock(Long skuId)", "kind": "mapper", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/InventoryMapper.java", "line": 5, "depth": 3, "entry": false}
+      ],
+      "edges": [
+        {"from": "m1", "to": "m2", "condition": ""},
+        {"from": "m1", "to": "m3", "condition": ""},
+        {"from": "m3", "to": "m4", "condition": ""},
+        {"from": "m3", "to": "m5", "condition": ""},
+        {"from": "m5", "to": "m6", "condition": ""}
+      ]
+    },
+    {
+      "name": "DELETE /api/orders/{id} · OrderController#cancel",
+      "entry": "OrderController#cancel",
+      "nodes": [
+        {"id": "m1", "name": "OrderController#cancel", "class": "OrderController", "package": "com.demo.order", "method": "cancel", "signature": "cancel(Long id)", "kind": "controller", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderController.java", "line": 30, "depth": 0, "entry": true},
+        {"id": "m2", "name": "OrderService#cancel", "class": "OrderService", "package": "com.demo.order", "method": "cancel", "signature": "cancel(Long id)", "kind": "service", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderService.java", "line": 33, "depth": 1, "entry": false},
+        {"id": "m3", "name": "Result#ok", "class": "Result", "package": "com.demo.common", "method": "ok", "signature": "ok(T data)", "kind": "component", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/common/Result.java", "line": 8, "depth": 1, "entry": false},
+        {"id": "m4", "name": "OrderMapper#selectById", "class": "OrderMapper", "package": "com.demo.order", "method": "selectById", "signature": "selectById(Long id)", "kind": "mapper", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderMapper.java", "line": 7, "depth": 2, "entry": false},
+        {"id": "m5", "name": "OrderMapper#updateStatus", "class": "OrderMapper", "package": "com.demo.order", "method": "updateStatus", "signature": "updateStatus(Long id, String status)", "kind": "mapper", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/order/OrderMapper.java", "line": 9, "depth": 2, "entry": false},
+        {"id": "m6", "name": "StockService#restore", "class": "StockService", "package": "com.demo.stock", "method": "restore", "signature": "restore(Long skuId, int count)", "kind": "service", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/StockService.java", "line": 27, "depth": 2, "entry": false},
+        {"id": "m7", "name": "InventoryMapper#selectStock", "class": "InventoryMapper", "package": "com.demo.stock", "method": "selectStock", "signature": "selectStock(Long skuId)", "kind": "mapper", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/InventoryMapper.java", "line": 5, "depth": 3, "entry": false},
+        {"id": "m8", "name": "InventoryMapper#updateStock", "class": "InventoryMapper", "package": "com.demo.stock", "method": "updateStock", "signature": "updateStock(Long skuId, int count)", "kind": "mapper", "file": "/C:/Users/Administrator/Documents/默认项目/黑百盒/analyzers/java-analyzer/samples/demo/src/main/java/com/demo/stock/InventoryMapper.java", "line": 7, "depth": 3, "entry": false}
+      ],
+      "edges": [
+        {"from": "m1", "to": "m2", "condition": ""},
+        {"from": "m1", "to": "m3", "condition": ""},
+        {"from": "m2", "to": "m4", "condition": ""},
+        {"from": "m2", "to": "m5", "condition": "(detail != null)"},
+        {"from": "m2", "to": "m6", "condition": "(detail != null)"},
+        {"from": "m6", "to": "m7", "condition": ""},
+        {"from": "m6", "to": "m8", "condition": ""}
+      ]
+    }
+  ]
+}
