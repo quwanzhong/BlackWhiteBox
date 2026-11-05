@@ -170,6 +170,25 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 - [流程 DSL 规范](docs/DSL.md)
 - [执行事件协议与动画状态机](docs/EXECUTION.md)
 
+## 8. 推送到 GitHub
+
+仓库已初始化为 `main` 分支并完成首次提交。先在 GitHub 新建空仓库（建议名 `heibaihe`，**不要**勾选 README / .gitignore），然后：
+
+```bash
+git remote add origin https://github.com/quwanzhong/heibaihe.git
+git push -u origin main
+```
+
+如果使用 SSH：
+
+```bash
+git remote add origin git@github.com:quwanzhong/heibaihe.git
+git push -u origin main
+```
+
+> 已忽略：`node_modules/`、`frontend/dist/`、`backend/data/`、`analyzers/java-analyzer/out/`、`*.jar`。
+> 克隆后执行 `npm run install:all && npm run build && npm start`，或直接双击 `start.bat`。
+
 ## License
 
 内部工具，暂未开源授权。
