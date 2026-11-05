@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { FLOWS_FILE, EXEC_DIR, EXEC_INDEX_FILE, ensureDirs } from './config.js'
+import crypto from 'node:crypto'
+import { FLOWS_FILE, EXEC_DIR, EXEC_INDEX_FILE, PROJECTS_FILE, BUGS_FILE, ensureDirs } from './config.js'
 
 ensureDirs()
 
@@ -35,6 +36,7 @@ export const store = {
     return this.listFlows().find((f) => f.id === id) || null
   },
   saveFlow(flow) {
+    if (!flow.id) flow.id = crypto.randomUUID()
     const flows = this.listFlows()
     const i = flows.findIndex((f) => f.id === flow.id)
     flow.updatedAt = Date.now()
@@ -67,5 +69,48 @@ export const store = {
   },
   getExecutionDetail(id) {
     return readJson(execFilePath(id), null)
+  },
+
+  // ---------- 项目（一个前端工程 → 一组 Apifox 接口） ----------
+  listProjects() {
+    return readJson(PROJECTS_FILE, [])
+  },
+  getProject(id) {
+    return this.listProjects().find((p) => p.id === id) || null
+  },
+  saveProject(project) {
+    const list = this.listProjects()
+    const i = list.findIndex((p) => p.id === project.id)
+    project.updatedAt = Date.now()
+    if (i >= 0) list[i] = project
+    else {
+      project.createdAt = Date.now()
+      list.unshift(project)
+    }
+    writeJson(PROJECTS_FILE, list)
+    return project
+  },
+  deleteProject(id) {
+    writeJson(PROJECTS_FILE, this.listProjects().filter((p) => p.id !== id))
+  },
+
+  // ---------- 缺陷反馈 ----------
+  listBugs() {
+    return readJson(BUGS_FILE, [])
+  },
+  saveBug(bug) {
+    const list = this.listBugs()
+    const i = list.findIndex((b) => b.id === bug.id)
+    bug.updatedAt = Date.now()
+    if (i >= 0) list[i] = bug
+    else {
+      bug.createdAt = Date.now()
+      list.unshift(bug)
+    }
+    writeJson(BUGS_FILE, list)
+    return bug
+  },
+  deleteBug(id) {
+    writeJson(BUGS_FILE, this.listBugs().filter((b) => b.id !== id))
   },
 }

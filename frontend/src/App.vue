@@ -1,6 +1,18 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 const route = useRoute()
+
+const activeMenu = computed(() => {
+  const p = route.path
+  if (p === '/') return '/'
+  if (p.startsWith('/projects')) return '/projects'
+  if (p.startsWith('/flows')) return '/flows'
+  if (p.startsWith('/reports')) return '/reports'
+  if (p.startsWith('/bugs')) return '/bugs'
+  if (p.startsWith('/import')) return '/import'
+  return p
+})
 </script>
 
 <template>
@@ -13,15 +25,21 @@ const route = useRoute()
           <div class="logo-sub">黑白盒测试平台</div>
         </div>
       </div>
-      <el-menu router :default-active="route.path" class="app-menu">
+      <el-menu router :default-active="activeMenu" class="app-menu">
         <el-menu-item index="/">
           <span class="menu-ico">▦</span><span>项目总览</span>
+        </el-menu-item>
+        <el-menu-item index="/projects">
+          <span class="menu-ico">◎</span><span>项目管理</span>
         </el-menu-item>
         <el-menu-item index="/flows">
           <span class="menu-ico">⇄</span><span>流程管理</span>
         </el-menu-item>
         <el-menu-item index="/reports">
           <span class="menu-ico">▤</span><span>执行报告</span>
+        </el-menu-item>
+        <el-menu-item index="/bugs">
+          <span class="menu-ico">⚑</span><span>缺陷反馈</span>
         </el-menu-item>
         <el-menu-item index="/import">
           <span class="menu-ico">⇩</span><span>数据导入</span>

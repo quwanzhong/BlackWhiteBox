@@ -11,6 +11,8 @@
 
 两个视角在界面上是**两套独立的流程视图**，互不干扰，但共用同一套执行引擎、动画协议和报告体系。
 
+在此之上提供**项目级闭环**：一个前端工程关联本机代码目录 + 同一份 Apifox 文档中它实际用到的接口，静态扫描源码调用顺序，按业务功能划分并一键生成可执行流程，失败步骤可直接提缺陷。
+
 ---
 
 ## 1. 功能一览
@@ -23,6 +25,10 @@
 - **条件流转**：连线可写 `$.code == 0 && $.data.ok`，不满足则跳过下游分支。
 - **执行报告**：每次执行落盘，支持回放画布终态、查看请求 / 响应 / 校验明细。
 - **Apifox MCP 直连**：填项目 ID + 访问令牌即可自动拉取接口列表，勾选后一键生成黑盒流程，无需每次导出 JSON。
+- **项目级管理**：一个项目 = 本机前端工程目录 + 该项目勾选的 Apifox 接口快照；同一份文档可服务多个项目，互不干扰。
+- **源码调用分析**：静态扫描 `axios / request / fetch` 等调用点，按路径匹配接口，记录文件 / 行号 / 函数名与真实调用顺序，未匹配可手动关联。
+- **业务功能闭环**：按 Apifox 目录 → 接口路径 → 代码目录划分业务功能，按功能或全量生成可执行黑盒流程。
+- **缺陷反馈**：报告失败步骤一键提缺陷，记录流程、请求、实际值 / 期望值与校验差异，支持状态流转与按项目筛选。
 - **Java 白盒分析器**：JDK 内置解析 API 实现，零第三方依赖，输出调用链 JSON 直接导入。
 
 ---
@@ -59,8 +65,8 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 黑百盒/
 ├── frontend/                  Vue3 + TS + Vite + Element Plus + AntV X6
 │   └── src/
-│       ├── views/             Dashboard / FlowList / FlowCanvas / ReportList / ReportDetail / ImportPage
-│       ├── components/        canvas（画布与节点）、节点编辑抽屉、步骤详情、结果汇总、日志控制台
+│       ├── views/             Dashboard / ProjectsPage / ProjectDetail / FlowList / FlowCanvas / ReportList / ReportDetail / BugsPage / ImportPage
+│       ├── components/        canvas（画布与节点）、节点编辑抽屉、步骤详情、结果汇总、目录选择器、日志控制台
 │       ├── stores/            执行状态仓库（Socket.IO 事件 → 动画状态）
 │       ├── api/               后端接口封装
 │       └── styles/            发光动画与全局样式
@@ -68,8 +74,9 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 │   └── src/
 │       ├── engine/            调度器、HTTP 执行器、校验器、JSONPath、会话注册表
 │       ├── apifox/            MCP 客户端（STDIO JSON-RPC）+ 文档还原 + 接口列表
+│       ├── projects/          源码调用扫描、路径匹配、业务分组、流程生成
 │       ├── importers/         OpenAPI（Apifox）→ 黑盒流程
-│       ├── routes/            flows / executions / import / apifox / stats
+│       ├── routes/            flows / executions / import / apifox / projects / bugs / fs / stats
 │       ├── store.js           JSON 文件存储（换 SQLite/PostgreSQL 只改这一层）
 │       └── seed.js            演示数据
 ├── analyzers/java-analyzer/   Java 白盒调用链分析器（零依赖，自带示例工程）
@@ -96,7 +103,21 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 > 详细说明（令牌安全、私有化部署、在线文档模式、常见报错）见 [docs/APIFOX.md](docs/APIFOX.md)。
 > 无法直连 MCP 时，展开「备用导入通道」手动粘贴 OpenAPI JSON，效果一致。
 
-### 3.2 白盒：Java 调用链走查
+### 3.2 项目级：代码目录 + 接口勾选 + 业务闭环（推荐）
+
+面向「同一份 Apifox 文档服务多个前端工程」的场景：
+
+1. **项目管理 → 新建项目**，填写项目名，点「选择目录」挑本机前端工程（只记录绝对路径，不上传代码）；
+2. 项目详情 →「① 绑定 Apifox 接口」，拉取后勾选本项目实际用到的接口并保存（保存完整元数据快照）；
+3. 「② 扫描代码调用流程」，静态扫描 `axios / request / fetch` 调用点，按路径自动匹配接口；
+4. 未匹配 / 置信度低的调用点可「手动关联」；
+5. 「③ 业务功能闭环」按 Apifox 目录 / 接口路径 / 代码目录分组，勾选后生成流程（或生成全量流程）；
+6. 生成的流程节点按源码调用顺序排列（同一接口在一条流程内合并为一个节点），可直接执行；
+7. 报告失败步骤点「提缺陷」，在 **缺陷反馈** 页跟踪到关闭。
+
+> 代码扫描规则、路径匹配算法、分组优先级、生成规则与接口清单见 [docs/PROJECTS.md](docs/PROJECTS.md)。
+
+### 3.3 白盒：Java 调用链走查
 
 ```bash
 cd analyzers/java-analyzer
@@ -163,11 +184,15 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 ## 6. 后续路线
 
 - [x] Apifox MCP 直连拉取接口（勾选生成黑盒流程）
+- [x] 项目级管理：代码目录关联、按项目勾选接口、接口快照
+- [x] 前端源码调用扫描与接口路径匹配、手动关联
+- [x] 业务功能划分与闭环流程生成
+- [x] 执行失败步骤提缺陷与缺陷状态跟踪
 - [ ] 流程 DSL 版本化与导入校验
 - [ ] 环境变量 / 全局 Header / Cookie 管理
 - [ ] 断言提取联动（把提取值直接回填到断言）
 - [ ] 定时执行 + 失败通知（企业微信 / 飞书）
-- [ ] 多用户、权限、项目管理（推广期）
+- [ ] 多用户与权限（推广期）
 - [ ] Playwright UI 流程执行器（`action.type = "ui"` 扩展位已预留）
 - [ ] Java 分析器升级 JavaParser + SymbolSolver，支持接口实现映射
 
@@ -178,6 +203,7 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 - [流程 DSL 规范](docs/DSL.md)
 - [执行事件协议与动画状态机](docs/EXECUTION.md)
 - [Apifox MCP 直连说明](docs/APIFOX.md)
+- [项目级测试：代码 × 接口 × 业务闭环](docs/PROJECTS.md)
 
 ## 8. 推送到 GitHub
 

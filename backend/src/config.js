@@ -11,6 +11,8 @@ export const DATA_DIR = path.join(ROOT, 'data')
 export const EXEC_DIR = path.join(DATA_DIR, 'executions')
 export const FLOWS_FILE = path.join(DATA_DIR, 'flows.json')
 export const EXEC_INDEX_FILE = path.join(EXEC_DIR, 'index.json')
+export const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json')
+export const BUGS_FILE = path.join(DATA_DIR, 'bugs.json')
 /** 服务端口 */
 export const PORT = Number(process.env.PORT || 3310)
 /** 前端构建产物目录（生产模式下由后端托管） */

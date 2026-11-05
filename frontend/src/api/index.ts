@@ -38,6 +38,34 @@ export const api = {
   apifoxImport: (data: any): Promise<{ flows: FlowDsl[] }> =>
     http.post('/apifox/import', data, { timeout: 600000 }).then((r) => r.data),
 
+  // 项目（前端工程 → Apifox 接口 → 源码扫描 → 业务功能 → 流程）
+  listProjects: (): Promise<any[]> => http.get('/projects').then((r) => r.data),
+  getProject: (id: string): Promise<any> => http.get(`/projects/${id}`).then((r) => r.data),
+  createProject: (data: any): Promise<any> => http.post('/projects', data).then((r) => r.data),
+  updateProject: (id: string, data: any): Promise<any> => http.put(`/projects/${id}`, data).then((r) => r.data),
+  deleteProject: (id: string) => http.delete(`/projects/${id}`),
+  fsRoots: (): Promise<any> => http.get('/fs/roots').then((r) => r.data),
+  fsList: (path = ''): Promise<any> => http.get('/fs/list', { params: { path } }).then((r) => r.data),
+  fsCheck: (path: string): Promise<any> => http.get('/fs/check', { params: { path } }).then((r) => r.data),
+  projectPull: (id: string, data?: any): Promise<any> =>
+    http.post(`/projects/${id}/pull`, data, { timeout: 600000 }).then((r) => r.data),
+  projectAvailable: (id: string): Promise<any> => http.get(`/projects/${id}/available`).then((r) => r.data),
+  projectBind: (id: string, ids: string[]): Promise<any> =>
+    http.put(`/projects/${id}/interfaces`, { ids }).then((r) => r.data),
+  projectScan: (id: string, data?: any): Promise<any> =>
+    http.post(`/projects/${id}/scan`, data, { timeout: 300000 }).then((r) => r.data),
+  projectMap: (id: string, data: any): Promise<any> =>
+    http.post(`/projects/${id}/mapping`, data).then((r) => r.data),
+  projectGenerate: (id: string, data?: any): Promise<{ flows: any[] }> =>
+    http.post(`/projects/${id}/flows`, data).then((r) => r.data),
+  projectFlows: (id: string): Promise<any[]> => http.get(`/projects/${id}/flows`).then((r) => r.data),
+
+  // 缺陷
+  listBugs: (params?: any): Promise<any[]> => http.get('/bugs', { params }).then((r) => r.data),
+  createBug: (data: any): Promise<any> => http.post('/bugs', data).then((r) => r.data),
+  updateBug: (id: string, data: any): Promise<any> => http.put(`/bugs/${id}`, data).then((r) => r.data),
+  deleteBug: (id: string) => http.delete(`/bugs/${id}`),
+
   // 总览
   getStats: (): Promise<any> => http.get('/stats').then((r) => r.data),
 }

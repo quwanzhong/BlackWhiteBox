@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
@@ -7,6 +7,8 @@ import { api } from '../api'
 const router = useRouter()
 const activeType = ref<'blackbox' | 'whitebox'>('blackbox')
 const flows = ref<any[]>([])
+const projects = ref<any[]>([])
+const projectFilter = ref('')
 const loading = ref(false)
 const createVisible = ref(false)
 const createForm = reactive({ name: '', type: 'blackbox', description: '' })
@@ -20,7 +22,15 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  projects.value = await api.listProjects()
+})
+
+const filteredFlows = computed(() =>
+  projectFilter.value ? flows.value.filter((f) => f.projectId === projectFilter.value) : flows.value
+)
+const projectName = (id: string) => projects.value.find((p) => p.id === id)?.name || ''
 
 async function create() {
   if (!createForm.name.trim()) return ElMessage.warning('请填写流程名称')
@@ -70,13 +80,30 @@ const fmt = (t?: number) => (t ? new Date(t).toLocaleString('zh-CN', { hour12: f
         <el-tab-pane label="⬜ 白盒流程" name="whitebox" />
       </el-tabs>
 
-      <el-table :data="flows" v-loading="loading" style="width: 100%">
+      <div class="list-toolbar">
+        <el-select v-model="projectFilter" clearable placeholder="全部项目" style="width: 210px">
+          <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+        </el-select>
+        <span class="muted">共 {{ filteredFlows.length }} 条流程</span>
+      </div>
+
+      <el-table :data="filteredFlows" v-loading="loading" style="width: 100%">
         <el-table-column prop="name" label="流程名称" min-width="220">
           <template #default="{ row }">
             <el-link type="primary" @click="open(row)">{{ row.name }}</el-link>
+            <el-tag v-if="row.source === 'project-scan'" size="small" type="success" effect="plain" class="src-tag">源码生成</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="description" label="描述" min-width="240" show-overflow-tooltip />
+        <el-table-column label="项目 / 业务功能" min-width="180">
+          <template #default="{ row }">
+            <div v-if="row.projectId" class="proj-cell">
+              <span>{{ projectName(row.projectId) || row.projectId.slice(0, 8) }}</span>
+              <el-tag v-if="row.business" size="small" effect="plain">{{ row.business }}</el-tag>
+            </div>
+            <span v-else class="diff-na">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="description" label="描述" min-width="220" show-overflow-tooltip />
         <el-table-column prop="nodeCount" label="节点数" width="80" align="center" />
         <el-table-column label="更新时间" width="170">
           <template #default="{ row }">{{ fmt(row.updatedAt) }}</template>
@@ -118,3 +145,9 @@ const fmt = (t?: number) => (t ? new Date(t).toLocaleString('zh-CN', { hour12: f
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.list-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+.src-tag { margin-left: 8px; }
+.proj-cell { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; font-size: 12px; }
+</style>

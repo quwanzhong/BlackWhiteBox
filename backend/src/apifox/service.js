@@ -11,7 +11,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DATA_DIR } from '../config.js'
-import { parseOpenApi } from '../importers/openapi.js'
+import { parseOpenApi, sampleBody } from '../importers/openapi.js'
 import { ApifoxMcpClient, pickTool } from './mcpClient.js'
 
 const APIFOX_DIR = path.join(DATA_DIR, 'apifox')
@@ -341,6 +341,56 @@ export function extractInterfaces(spec) {
     }
   }
   return list
+}
+
+function paramMeta(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter((p) => p && p.name)
+    .map((p) => ({
+      name: p.name,
+      in: p.in,
+      required: Boolean(p.required),
+      type: p.schema?.type || '',
+      example: p.example ?? p.schema?.example ?? p.schema?.default ?? '',
+      description: p.description || '',
+    }))
+}
+
+/**
+ * 把选中的接口展开成「可脱离文档缓存使用」的完整元数据。
+ * 项目绑定接口时存一份快照，后续扫描与生成流程都不再依赖 Apifox 缓存。
+ */
+export function describeInterfaces(spec, ids) {
+  const wanted = new Set(ids)
+  const serverUrl = spec.servers?.[0]?.url || ''
+  const result = []
+  for (const [apiPath, item] of Object.entries(spec.paths || {})) {
+    if (!isPlainObject(item)) continue
+    for (const method of METHODS) {
+      const op = item[method]
+      if (!isPlainObject(op)) continue
+      const id = `${method.toUpperCase()} ${apiPath}`
+      if (!wanted.has(id)) continue
+      const params = paramMeta([...(item.parameters || []), ...(op.parameters || [])])
+      result.push({
+        id,
+        method: method.toUpperCase(),
+        path: apiPath,
+        name: op.summary || op.operationId || id,
+        operationId: op.operationId || '',
+        folder: op['x-apifox-folder'] || item['x-apifox-folder'] || '',
+        status: op['x-apifox-status'] || item['x-apifox-status'] || '',
+        tags: Array.isArray(op.tags) ? op.tags : [],
+        deprecated: Boolean(op.deprecated),
+        summary: op.summary || '',
+        serverUrl,
+        pathParams: params.filter((p) => p.in === 'path'),
+        queryParams: params.filter((p) => p.in === 'query'),
+        bodySample: sampleBody(op),
+      })
+    }
+  }
+  return result
 }
 
 export function filterSpec(spec, ids) {

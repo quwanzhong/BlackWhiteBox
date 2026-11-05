@@ -54,6 +54,8 @@ export class RunSession {
       flowId: this.flow.id,
       flowName: this.flow.name,
       flowType: this.flow.type,
+      projectId: this.flow.projectId || '',
+      business: this.flow.business || '',
       status: this.status,
       startedAt: this.startedAt,
       finishedAt: this.finishedAt,
@@ -335,7 +337,7 @@ export class RunSession {
     const failed = steps.filter((s) => s.status === 'failed').length
     const skipped = steps.filter((s) => s.status === 'skipped').length
     const executed = steps.filter((s) => s.status === 'passed' || s.status === 'failed')
-    const matchedAll = executed.every((s) => s.checks?.matched !== false)
+    const matchedAll = failed === 0 && executed.every((s) => s.checks?.matched !== false)
 
     this.status = this.stopped && this.status === 'stopped' ? 'stopped' : failed > 0 ? 'failed' : 'passed'
     this.finishedAt = Date.now()

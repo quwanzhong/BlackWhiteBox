@@ -3,7 +3,7 @@
  * 数据来源可以是 Apifox 导出的 OpenAPI JSON。
  */
 
-function exampleFromSchema(schema) {
+export function exampleFromSchema(schema) {
   if (!schema || typeof schema !== 'object') return null
   if (schema.example !== undefined) return schema.example
   if (schema.$ref) return {}
@@ -29,7 +29,7 @@ function exampleFromSchema(schema) {
   }
 }
 
-function sampleBody(op) {
+export function sampleBody(op) {
   const content = op.requestBody?.content
   if (!content) return null
   const json = content['application/json'] || content['*/*'] || Object.values(content)[0]
