@@ -11,12 +11,11 @@ import path from 'node:path'
 import { store } from '../store.js'
 import {
   describeInterfaces,
-  extractInterfaces,
   fetchInterfaces,
   getCachedInterfaces,
-  loadConfig,
   readCache,
   resolveConnection,
+  saveConfig,
 } from '../apifox/service.js'
 import { analyzeProject, buildGroups, matchCalls } from './scanner.js'
 
@@ -116,31 +115,27 @@ export function deleteProject(id) {
 // Apifox 接口绑定
 // ---------------------------------------------------------------------------
 
-/** 合并「项目配置 → 全局配置 → 请求参数」得到连接参数 */
-function connectionFor(project, input = {}) {
-  const cfg = loadConfig()
-  return resolveConnection({
-    projectId: input.projectId || project.apifox?.projectId || undefined,
-    siteId: input.siteId || project.apifox?.siteId || undefined,
-    branchId: input.branchId || project.apifox?.branchId || undefined,
-    baseUrl: input.apiBaseUrl || project.apifox?.apiBaseUrl || undefined,
-    token: input.token || undefined,
-  })
+/**
+ * 全局单例连接：请求参数 → 全局配置 → 内存令牌。
+ * 项目不再维护自己的 Apifox 连接，避免黑盒 / 白盒各自拉取。
+ */
+function connectionFor(input = {}) {
+  return resolveConnection(input)
 }
 
 /**
  * 拉取项目可用接口。
- * 同一份 Apifox 文档可被多个项目复用：未配置项目 ID / 未刷新时优先使用本机缓存。
+ * 所有项目共用同一份全局 Apifox 连接与文档缓存。
  */
 export async function pullProjectInterfaces(id, input = {}) {
   const project = store.getProject(id)
   if (!project) throw new Error('项目不存在')
-  const connection = connectionFor(project, input)
+  const connection = connectionFor(input)
 
   if (!connection.projectId && !connection.siteId) {
     const cached = getCachedInterfaces()
     if (cached) return { ...cached, fromCache: true }
-    throw new Error('请先在「数据导入」页连接 Apifox，或在项目里填写项目 ID 与访问令牌')
+    throw new Error('请先在「数据导入」页完成全局 Apifox 连接（项目 ID + 访问令牌）')
   }
 
   if (!connection.token) {
@@ -152,24 +147,23 @@ export async function pullProjectInterfaces(id, input = {}) {
   }
 
   const result = await fetchInterfaces(connection, { refresh: input.refresh !== false })
-  // 只记录连接标识，不保存令牌
-  project.apifox = {
-    projectId: connection.projectId || project.apifox?.projectId || '',
-    siteId: connection.siteId || project.apifox?.siteId || '',
-    branchId: connection.branchId || project.apifox?.branchId || '',
-    apiBaseUrl: connection.baseUrl || project.apifox?.apiBaseUrl || '',
-  }
-  store.saveProject(project)
+  // 连接标识回写全局配置，保持全站单例；令牌仍然只留在进程内存
+  saveConfig({
+    projectId: connection.projectId,
+    siteId: connection.siteId,
+    branchId: connection.branchId,
+    baseUrl: connection.baseUrl,
+    token: input.token !== undefined ? connection.token : undefined,
+  })
   return { ...result, fromCache: false }
 }
 
-/** 读取当前可用接口：优先本机缓存（项目 ID 一致时），其次项目已绑定快照 */
+/** 读取当前可用接口：优先全局本机缓存，其次项目已绑定快照 */
 export function availableInterfaces(id) {
   const project = store.getProject(id)
   if (!project) throw new Error('项目不存在')
   const cached = getCachedInterfaces()
-  const sameDoc = !project.apifox?.projectId || !cached?.projectId || cached.projectId === project.apifox.projectId
-  if (cached && sameDoc) return { ...cached, source: 'cache' }
+  if (cached) return { ...cached, source: 'cache' }
   if (project.interfaces?.length) {
     return {
       title: project.name,

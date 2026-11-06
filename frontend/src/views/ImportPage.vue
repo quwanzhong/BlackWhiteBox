@@ -1,36 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
+import { useApifoxStore } from '../stores/apifox'
 import type { FlowDsl } from '../types/flow'
 
 const router = useRouter()
+const apifox = useApifoxStore()
 
-// ---------------- Apifox MCP 自动拉取 ----------------
-const STORAGE_KEY = 'heibaihe.apifox.connection'
-
-interface ApifoxInterface {
-  id: string
-  method: string
-  path: string
-  name: string
-  operationId?: string
-  folder?: string
-  status?: string
-  tags?: string[]
-  deprecated?: boolean
-}
-
-const conn = reactive({
-  projectId: '',
-  token: '',
-  siteId: '',
-  branchId: '',
-  baseUrl: '',
-})
-const rememberToken = ref(true)
-const hasEnvToken = ref(false)
+// ---------------- Apifox MCP 自动拉取（全局单例） ----------------
 const showAdvanced = ref(false)
 
 const testing = ref(false)
@@ -38,17 +17,27 @@ const pulling = ref(false)
 const importing = ref(false)
 const loadingCache = ref(false)
 
-const info = ref<{ title: string; version: string; interfaceCount?: number; baseUrl?: string } | null>(null)
-const interfaces = ref<ApifoxInterface[]>([])
+const interfaces = computed(() => apifox.interfaces)
+const info = computed(() =>
+  apifox.title
+    ? {
+        title: apifox.title,
+        version: apifox.version,
+        interfaceCount: apifox.interfaces.length,
+        baseUrl: apifox.docBaseUrl,
+      }
+    : null
+)
+const fetchedAt = computed(() => apifox.fetchedAt)
+const hasServerToken = computed(() => apifox.hasEnvToken || apifox.hasRuntimeToken)
 const selectedIds = ref<string[]>([])
-const fetchedAt = ref(0)
+
 const keyword = ref('')
 const methodFilter = ref('')
 const flowName = ref('')
 const targetBaseUrl = ref('')
 const tableRef = ref<any>()
 
-const cachedTitle = computed(() => info.value?.title || '')
 const filteredInterfaces = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return interfaces.value.filter((it) => {
@@ -60,58 +49,18 @@ const filteredInterfaces = computed(() => {
   })
 })
 
-function persistConnection() {
-  try {
-    const payload = {
-      projectId: conn.projectId,
-      siteId: conn.siteId,
-      branchId: conn.branchId,
-      baseUrl: conn.baseUrl,
-      token: rememberToken.value ? conn.token : '',
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
-  } catch {
-    /* localStorage 不可用时忽略 */
-  }
-}
-
-function restoreConnection() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return
-    const saved = JSON.parse(raw)
-    conn.projectId = saved.projectId || ''
-    conn.siteId = saved.siteId || ''
-    conn.branchId = saved.branchId || ''
-    conn.baseUrl = saved.baseUrl || ''
-    if (saved.token) conn.token = saved.token
-    else rememberToken.value = false
-  } catch {
-    /* 忽略损坏的本地配置 */
-  }
-}
-
-function applyInterfacePayload(data: any) {
-  interfaces.value = data.interfaces || []
-  info.value = {
-    title: data.title || cachedTitle.value,
-    version: data.version || '',
-    interfaceCount: interfaces.value.length,
-    baseUrl: data.baseUrl || '',
-  }
-  fetchedAt.value = data.fetchedAt || 0
-  if (!flowName.value) flowName.value = `${data.title || 'Apifox'} 黑盒流程`
-  if (!targetBaseUrl.value) targetBaseUrl.value = data.baseUrl || ''
-  selectedIds.value = []
-  tableRef.value?.clearSelection?.()
+/** 首次拿到文档信息时给表单填默认值 */
+function syncDocDefaults() {
+  if (!flowName.value && apifox.title) flowName.value = `${apifox.title} 黑盒流程`
+  if (!targetBaseUrl.value) targetBaseUrl.value = apifox.docBaseUrl
 }
 
 function checkConnectionFields() {
-  if (!conn.projectId && !conn.siteId) {
+  if (!apifox.configured) {
     ElMessage.warning('请填写 Apifox 项目 ID（或在线文档 site-id）')
     return false
   }
-  if (conn.projectId && !conn.token && !hasEnvToken.value) {
+  if (apifox.projectId && !apifox.ready) {
     ElMessage.warning('请填写 Apifox 访问令牌（APIFOX_ACCESS_TOKEN）')
     return false
   }
@@ -122,15 +71,8 @@ async function testConnection() {
   if (!checkConnectionFields()) return
   testing.value = true
   try {
-    const res = await api.apifoxTest({ ...conn })
-    info.value = {
-      title: res.title || '',
-      version: res.version || '',
-      interfaceCount: res.interfaceCount,
-      baseUrl: res.baseUrl || '',
-    }
-    hasEnvToken.value = true
-    persistConnection()
+    const res = await apifox.test()
+    syncDocDefaults()
     ElMessage.success(
       `连接成功：${res.title || '未命名项目'}${res.version ? `（v${res.version}）` : ''}，识别到 ${res.interfaceCount} 个接口`
     )
@@ -145,9 +87,10 @@ async function pullInterfaces() {
   if (!checkConnectionFields()) return
   pulling.value = true
   try {
-    const res = await api.apifoxInterfaces({ ...conn, refresh: true })
-    applyInterfacePayload(res)
-    persistConnection()
+    const res = await apifox.pull(true)
+    selectedIds.value = []
+    tableRef.value?.clearSelection?.()
+    syncDocDefaults()
     ElMessage.success(`已拉取 ${res.interfaces?.length || 0} 个接口（来自「${res.title || 'Apifox'}」）`)
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.error || e.message || '拉取接口失败')
@@ -159,16 +102,14 @@ async function pullInterfaces() {
 async function loadCachedInterfaces() {
   loadingCache.value = true
   try {
-    const res = await api.apifoxCachedInterfaces()
-    applyInterfacePayload(res)
-  } catch {
-    /* 没有缓存时静默 */
+    await apifox.ensureLoaded()
+    syncDocDefaults()
   } finally {
     loadingCache.value = false
   }
 }
 
-function onSelectionChange(rows: ApifoxInterface[]) {
+function onSelectionChange(rows: any[]) {
   selectedIds.value = rows.map((r) => r.id)
 }
 
@@ -192,13 +133,12 @@ async function generateFlow() {
   importing.value = true
   try {
     const { flows } = await api.apifoxImport({
-      ...conn,
+      ...apifox.connPayload(),
       ids: selectedIds.value,
       name: flowName.value.trim() || undefined,
       baseUrl: targetBaseUrl.value.trim() || undefined,
       refresh: false,
     })
-    persistConnection()
     ElMessage.success(`已生成黑盒流程（${flows?.[0]?.nodes?.length || 0} 个节点）`)
     if (flows?.[0]?.id) router.push(`/flows/${flows[0].id}`)
   } catch (e: any) {
@@ -233,17 +173,7 @@ function formatTime(ts: number) {
 }
 
 onMounted(async () => {
-  restoreConnection()
-  try {
-    const cfg = await api.apifoxGetConfig()
-    hasEnvToken.value = Boolean(cfg.hasEnvToken || cfg.hasRuntimeToken)
-    if (!conn.projectId && cfg.projectId) conn.projectId = cfg.projectId
-    if (!conn.siteId && cfg.siteId) conn.siteId = cfg.siteId
-    if (!conn.branchId && cfg.branchId) conn.branchId = cfg.branchId
-    if (!conn.baseUrl && cfg.baseUrl) conn.baseUrl = cfg.baseUrl
-  } catch {
-    /* 后端未就绪时忽略 */
-  }
+  // 全局单例：配置与缓存只加载一次，项目页 / 黑盒页共用
   await loadCachedInterfaces()
 })
 
@@ -323,7 +253,7 @@ async function importWhitebox() {
       <div>
         <div class="page-title">数据导入</div>
         <div class="page-sub">
-          黑盒：直连 Apifox MCP 自动拉取接口 → 勾选生成流程；白盒：从 Java 分析器生成调用链流程
+          全局 Apifox 连接只配置一次，黑盒导入与项目绑定接口共用；黑盒：勾选接口生成流程，白盒：从 Java 分析器生成调用链流程
         </div>
       </div>
     </div>
@@ -332,24 +262,25 @@ async function importWhitebox() {
     <div class="import-card mcp-card">
       <div class="mcp-head">
         <div>
-          <h3>⬛ 连接 Apifox（MCP 自动拉取 · 推荐）</h3>
+          <h3>⬛ 全局 Apifox 连接（MCP 自动拉取 · 推荐）</h3>
           <div class="desc" style="margin-bottom: 0">
             后端通过官方 <code>apifox-mcp-server</code> 直连你的 Apifox 项目，实时读取接口文档，
-            无需每次导出 JSON。令牌仅用于本次连接，不写入配置文件。
+            无需每次导出 JSON。<b>全局只需配置一次</b>：黑盒导入与项目绑定接口共用同一份连接和接口列表。
+            令牌仅用于本次连接，不写入配置文件。
           </div>
         </div>
-        <el-tag v-if="hasEnvToken && !conn.token" type="success" effect="plain">后端已配置令牌</el-tag>
+        <el-tag v-if="hasServerToken && !apifox.token" type="success" effect="plain">后端已配置令牌</el-tag>
       </div>
 
       <div class="mcp-form">
         <div class="field">
           <label>项目 ID <span class="req">*</span></label>
-          <el-input v-model="conn.projectId" placeholder="Apifox → 项目设置 → 基本设置 → 项目 ID" clearable />
+          <el-input v-model="apifox.projectId" placeholder="Apifox → 项目设置 → 基本设置 → 项目 ID" clearable />
         </div>
         <div class="field">
           <label>访问令牌 <span class="req">*</span></label>
           <el-input
-            v-model="conn.token"
+            v-model="apifox.token"
             type="password"
             show-password
             placeholder="Apifox → 账号设置 → API 访问令牌"
@@ -366,7 +297,7 @@ async function importWhitebox() {
         <el-button link type="primary" @click="showAdvanced = !showAdvanced">
           {{ showAdvanced ? '收起高级选项' : '高级选项（私有化部署 / 在线文档 / 分支）' }}
         </el-button>
-        <el-checkbox v-model="rememberToken" style="margin-left: 8px" @change="persistConnection">
+        <el-checkbox v-model="apifox.rememberToken" style="margin-left: 8px" @change="apifox.persistLocal()">
           记住令牌（仅本机浏览器 localStorage）
         </el-checkbox>
         <span v-if="loadingCache" class="muted" style="margin-left: 8px">正在读取本机缓存…</span>
@@ -376,15 +307,15 @@ async function importWhitebox() {
         <div v-show="showAdvanced" class="mcp-advanced">
           <div class="field">
             <label>在线文档 site-id</label>
-            <el-input v-model="conn.siteId" placeholder="公开在线文档模式：填 site-id，可留空令牌" clearable />
+            <el-input v-model="apifox.siteId" placeholder="公开在线文档模式：填 site-id，可留空令牌" clearable />
           </div>
           <div class="field">
             <label>迭代分支 ID</label>
-            <el-input v-model="conn.branchId" placeholder="可选，读取指定迭代分支" clearable />
+            <el-input v-model="apifox.branchId" placeholder="可选，读取指定迭代分支" clearable />
           </div>
           <div class="field">
             <label>私有化 API 地址</label>
-            <el-input v-model="conn.baseUrl" placeholder="可选，如 https://apifox.mycompany.com" clearable />
+            <el-input v-model="apifox.baseUrl" placeholder="可选，如 https://apifox.mycompany.com" clearable />
           </div>
         </div>
       </el-collapse-transition>

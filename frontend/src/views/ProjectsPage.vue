@@ -17,8 +17,6 @@ const form = reactive({
   description: '',
   codePath: '',
   serviceBaseUrl: '',
-  apifoxProjectId: '',
-  token: '',
 })
 
 const steps = [
@@ -46,8 +44,6 @@ function openCreate() {
   form.description = ''
   form.codePath = ''
   form.serviceBaseUrl = ''
-  form.apifoxProjectId = ''
-  form.token = ''
   createVisible.value = true
 }
 
@@ -60,7 +56,6 @@ async function create() {
       description: form.description,
       codePath: form.codePath,
       serviceBaseUrl: form.serviceBaseUrl,
-      apifox: { projectId: form.apifoxProjectId },
     })
     createVisible.value = false
     ElMessage.success('项目已创建，接下来勾选接口')
@@ -162,8 +157,8 @@ const matchTag = (rate?: number) => (rate >= 90 ? 'success' : rate >= 60 ? 'warn
         <el-form-item label="被测服务地址">
           <el-input v-model="form.serviceBaseUrl" placeholder="例如：http://127.0.0.1:8080/api（可留空，取接口文档服务地址）" />
         </el-form-item>
-        <el-form-item label="Apifox 项目 ID">
-          <el-input v-model="form.apifoxProjectId" placeholder="留空则使用「数据导入」页已连接的项目" />
+        <el-form-item label="Apifox 连接">
+          <div class="muted">使用<b>全局 Apifox 连接</b>（在「数据导入」页配置一次，所有项目共用）。</div>
         </el-form-item>
       </el-form>
       <template #footer>

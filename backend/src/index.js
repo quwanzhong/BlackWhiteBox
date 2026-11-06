@@ -22,6 +22,14 @@ const io = new Server(server, { cors: { origin: '*' } })
 app.use(cors())
 app.use(express.json({ limit: '20mb' }))
 
+// 接口响应不参与浏览器缓存：否则 GET 会返回 304（空 body），
+// axios 只认 2xx，会把 304 当成错误，页面就会误显示“没有数据”。
+app.disable('etag')
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store')
+  next()
+})
+
 // 把 io 注入请求，供执行引擎推送实时事件
 app.use((req, _res, next) => {
   req.io = io

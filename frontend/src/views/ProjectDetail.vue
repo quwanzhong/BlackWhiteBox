@@ -3,11 +3,13 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
+import { useApifoxStore } from '../stores/apifox'
 import FolderPicker from '../components/FolderPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
 const id = route.params.id as string
+const apifox = useApifoxStore()
 
 const project = ref<any>(null)
 const loading = ref(false)
@@ -20,7 +22,6 @@ const keyword = ref('')
 const folderFilter = ref('')
 const savingBind = ref(false)
 const pulling = ref(false)
-const pullForm = reactive({ projectId: '', token: '' })
 
 // 代码分析
 const pickerVisible = ref(false)
@@ -39,7 +40,7 @@ const generating = ref(false)
 
 // 设置
 const editVisible = ref(false)
-const editForm = reactive({ name: '', description: '', codePath: '', serviceBaseUrl: '', apifoxProjectId: '' })
+const editForm = reactive({ name: '', description: '', codePath: '', serviceBaseUrl: '' })
 
 const interfaces = computed<any[]>(() => available.value?.interfaces || [])
 const folders = computed(() => [...new Set(interfaces.value.map((i) => i.folder).filter(Boolean))])
@@ -68,11 +69,11 @@ const groupSourceText: Record<string, string> = {
 async function load() {
   loading.value = true
   try {
+    await apifox.ensureLoaded()
     project.value = await api.getProject(id)
     selectedIds.value = [...(project.value.interfaceIds || [])]
     scanPath.value = project.value.codePath || ''
     scanBase.value = project.value.serviceBaseUrl || ''
-    pullForm.projectId = project.value.apifox?.projectId || ''
     await loadAvailable()
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.error || '加载项目失败')
@@ -90,6 +91,18 @@ async function loadAvailable() {
 }
 
 onMounted(load)
+
+/** 当前文档里实际存在的接口 ID（用于识别刷新后失效的绑定） */
+const availableIdSet = computed(() => new Set((available.value?.interfaces || []).map((i: any) => i.id)))
+const staleIds = computed(() =>
+  available.value ? selectedIds.value.filter((x) => !availableIdSet.value.has(x)) : []
+)
+
+function keepAvailableOnly() {
+  const removed = staleIds.value.length
+  selectedIds.value = selectedIds.value.filter((x) => availableIdSet.value.has(x))
+  ElMessage.success(`已移除 ${removed} 个当前文档中不存在的接口，记得点「保存勾选」`)
+}
 
 function toggleAll(checked: boolean) {
   const visible = filteredInterfaces.value.map((i) => i.id)
@@ -110,13 +123,18 @@ async function saveBind() {
 }
 
 async function pull() {
+  if (!apifox.configured) {
+    ElMessage.warning('请先在「数据导入」页完成全局 Apifox 连接')
+    router.push('/import')
+    return
+  }
   pulling.value = true
   try {
-    const data = await api.projectPull(id, { ...pullForm, refresh: true })
-    ElMessage.success(`拉取完成：${data.interfaces?.length || 0} 个接口${data.fromCache ? '（缓存）' : ''}`)
+    await apifox.pull(true)
+    ElMessage.success(`已刷新 ${apifox.interfaces.length} 个接口（全局连接）`)
     await loadAvailable()
   } catch (err: any) {
-    ElMessage.error(err?.response?.data?.error || '拉取接口失败')
+    ElMessage.error(err?.response?.data?.error || err.message || '拉取接口失败')
   } finally {
     pulling.value = false
   }
@@ -176,7 +194,6 @@ function openEdit() {
   editForm.description = project.value.description || ''
   editForm.codePath = project.value.codePath || ''
   editForm.serviceBaseUrl = project.value.serviceBaseUrl || ''
-  editForm.apifoxProjectId = project.value.apifox?.projectId || ''
   editVisible.value = true
 }
 
@@ -205,7 +222,6 @@ async function saveEdit() {
       description: editForm.description,
       codePath: editForm.codePath,
       serviceBaseUrl: editForm.serviceBaseUrl,
-      apifox: { projectId: editForm.apifoxProjectId },
     })
     project.value = { ...project.value, ...updated }
     scanPath.value = updated.codePath || ''
@@ -250,7 +266,9 @@ const matchTag = (rate?: number) => (rate >= 90 ? 'success' : rate >= 60 ? 'warn
         </div>
         <div class="pdb-item">
           <span class="pdb-label">Apifox</span>
-          <span class="pdb-value">{{ project.apifox?.projectId || '使用全局连接' }}</span>
+          <span class="pdb-value" :title="apifox.title">
+            {{ apifox.configured ? `全局 · ${apifox.title || apifox.projectId || apifox.siteId}` : '未配置（去数据导入页设置）' }}
+          </span>
         </div>
         <div class="pdb-item">
           <span class="pdb-label">已绑定接口</span>
@@ -275,6 +293,10 @@ const matchTag = (rate?: number) => (rate >= 90 ? 'success' : rate >= 60 ? 'warn
               </div>
               <div class="bt-right">
                 <span class="muted">已选 {{ selectedIds.length }} / {{ interfaces.length }}</span>
+                <span v-if="staleIds.length" class="stale-hint">
+                  {{ staleIds.length }} 个已不在当前文档
+                  <el-button link type="primary" @click="keepAvailableOnly">仅保留现有</el-button>
+                </span>
                 <el-button :loading="pulling" @click="pull">拉取 / 刷新接口</el-button>
                 <el-button type="primary" :loading="savingBind" @click="saveBind">保存勾选</el-button>
               </div>
@@ -282,12 +304,14 @@ const matchTag = (rate?: number) => (rate >= 90 ? 'success' : rate >= 60 ? 'warn
 
             <div v-if="!available" class="pd-empty">
               <div>还没有可用的 Apifox 接口。</div>
-              <div class="muted">先在「数据导入」页连接 Apifox，或在下方填写项目 ID / 令牌后拉取。</div>
+              <div class="muted">接口来自<b>全局 Apifox 连接</b>，在「数据导入」页配置一次即可，所有项目共用。</div>
+              <el-button type="primary" class="mt12" @click="router.push('/import')">去配置全局 Apifox</el-button>
             </div>
 
             <div v-else>
               <div class="bind-source muted">
-                来源：{{ available.source === 'cache' ? '本机 Apifox 缓存' : '项目接口快照' }}
+                来源：{{ available.source === 'cache' ? '全局 Apifox 缓存' : '项目接口快照' }}
+                · 全局连接：{{ apifox.title || apifox.projectId || apifox.siteId || '未配置' }}
                 · 拉取时间 {{ fmt(available.fetchedAt) }}
                 <span v-if="available.baseUrl"> · 服务地址 {{ available.baseUrl }}</span>
               </div>
@@ -307,16 +331,12 @@ const matchTag = (rate?: number) => (rate >= 90 ? 'success' : rate >= 60 ? 'warn
               </el-checkbox-group>
             </div>
 
-            <el-collapse class="mt12">
-              <el-collapse-item title="拉取设置（项目 ID / 访问令牌）" name="pull">
-                <div class="pull-form">
-                  <el-input v-model="pullForm.projectId" placeholder="Apifox 项目 ID（留空用全局配置）" />
-                  <el-input v-model="pullForm.token" type="password" show-password placeholder="访问令牌（仅本次使用，不保存）" />
-                  <el-button type="primary" :loading="pulling" @click="pull">立即拉取</el-button>
-                </div>
-                <div class="muted mt12">同一份 Apifox 文档可服务多个前端项目；每个项目只勾选自己实际用到的接口，勾选结果会保存完整接口快照。</div>
-              </el-collapse-item>
-            </el-collapse>
+            <div class="muted mt12 global-hint">
+              全局 Apifox 连接：
+              <b>{{ apifox.configured ? apifox.title || apifox.projectId || apifox.siteId : '未配置' }}</b>
+              · 连接参数只在「数据导入」页维护一次，所有项目共用同一份接口文档。
+              <el-button link type="primary" @click="router.push('/import')">去配置 / 刷新</el-button>
+            </div>
           </div>
         </el-tab-pane>
 
@@ -492,7 +512,6 @@ const matchTag = (rate?: number) => (rate >= 90 ? 'success' : rate >= 60 ? 'warn
             </div>
           </el-form-item>
           <el-form-item label="被测服务地址"><el-input v-model="editForm.serviceBaseUrl" /></el-form-item>
-          <el-form-item label="Apifox 项目 ID"><el-input v-model="editForm.apifoxProjectId" /></el-form-item>
         </el-form>
         <template #footer>
           <el-button @click="editVisible = false">取消</el-button>
@@ -513,6 +532,7 @@ const matchTag = (rate?: number) => (rate >= 90 ? 'success' : rate >= 60 ? 'warn
 .pd-tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
 .bind-toolbar { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; }
 .bt-left, .bt-right { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.stale-hint { color: #e6a23c; font-size: 12px; }
 .bind-source { margin: 10px 0 6px; }
 .iface-list { max-height: 460px; overflow: auto; border: 1px solid #ebeef5; border-radius: 8px; }
 .iface-row {
@@ -526,8 +546,6 @@ const matchTag = (rate?: number) => (rate >= 90 ? 'success' : rate >= 60 ? 'warn
 .iface-main { flex: 1; min-width: 0; }
 .iface-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .iface-path { font-size: 11px; color: #8a94a6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pull-form { display: flex; gap: 8px; flex-wrap: wrap; }
-.pull-form > * { flex: 1; min-width: 180px; }
 .pd-empty { text-align: center; color: #909399; padding: 34px 10px; font-size: 13px; line-height: 1.9; }
 .scan-line { display: flex; gap: 8px; flex-wrap: wrap; }
 .scan-line > .el-input:first-child { flex: 1; min-width: 280px; }
