@@ -25,7 +25,7 @@ jobs:
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
       - run: npm run lint
-      - run: npm test
+      - run: npm run test:coverage
 
   frontend:
     name: 前端 · lint + build

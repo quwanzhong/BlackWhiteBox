@@ -67,12 +67,17 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 ### 质量门禁
 
 ```bash
-npm run lint   # 后端 + 前端 eslint（--max-warnings=0）
-npm test       # 后端 node --test（26 个用例）
-npm run ci     # lint → test → build，与 GitHub Actions 同序
+npm run lint            # 后端 + 前端 eslint（--max-warnings=0）
+npm test                # 后端 node --test（59 个用例，快速反馈）
+npm run test:coverage   # 同上 + 覆盖率门槛（行/分支/函数均 ≥70%）
+npm run ci              # lint → test:coverage → build，与 GitHub Actions 同序
 ```
 
-CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint 与测试，并断言构建产物
+覆盖率只统计核心模块（`engine`、`projects/scanner`、`infra/store`、`security`），
+当前为行 **96.36%** / 分支 **79.20%** / 函数 **95.50%**；路由与导入器等胶水层由
+`backend/scripts/verify-m1-*.mjs` 对真实库副本做端到端回归。
+
+CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint 与覆盖率门禁，并断言构建产物
 `frontend/dist/index.html` 不含令牌占位符（生产令牌只能由后端在响应时注入）。
 
 ### 目录

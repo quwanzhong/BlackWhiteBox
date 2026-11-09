@@ -11,7 +11,8 @@
     "seed": "node src/seed.js --force",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
-    "test": "node --test"
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=src/engine/**/*.js --test-coverage-include=src/projects/scanner.js --test-coverage-include=src/infra/store/**/*.js --test-coverage-include=src/security/**/*.js --test-coverage-lines=70 --test-coverage-branches=70 --test-coverage-functions=70"
   },
   "dependencies": {
     "apifox-mcp-server": "^0.0.18",
