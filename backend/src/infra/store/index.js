@@ -1,0 +1,409 @@
+import crypto from 'node:crypto'
+
+function parse(json, fallback) {
+  if (json === null || json === undefined || json === '') return fallback
+  try {
+    return JSON.parse(json)
+  } catch {
+    return fallback
+  }
+}
+
+function foldersOf(interfaces) {
+  return [...new Set((interfaces || []).map((it) => it.folder).filter(Boolean))]
+}
+
+/** 与 projects/service.js 的 summarize() 保持同一份投影，供列表页直接使用 */
+function scanSummaryOf(scan) {
+  if (!scan) return null
+  return {
+    scannedAt: scan.scannedAt,
+    scannedFiles: scan.scannedFiles,
+    callCount: scan.callCount,
+    matchedCalls: scan.matchedCalls,
+    matchRate: scan.matchRate,
+    matchedInterfaces: scan.matchedInterfaces,
+    groupCount: scan.groups?.length || 0,
+  }
+}
+
+/**
+ * 用给定的 SQLite 连接创建 store（便于测试用 :memory:）。
+ * 门面方法与 M1-1 之前的 JSON 版本完全一致，仅新增 listProjectSummaries()。
+ */
+export function createStore(db) {
+  const s = {
+    // ---------- 流程 ----------
+    listFlows: db.prepare('SELECT graph_json FROM flows ORDER BY rowid DESC'),
+    getFlow: db.prepare('SELECT graph_json FROM flows WHERE id = ?'),
+    saveFlow: db.prepare(`
+      INSERT INTO flows (id, project_id, name, type, business, graph_json, created_at, updated_at)
+      VALUES (@id, @projectId, @name, @type, @business, @graphJson, @createdAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id,
+        name       = excluded.name,
+        type       = excluded.type,
+        business   = excluded.business,
+        graph_json = excluded.graph_json,
+        updated_at = excluded.updated_at
+    `),
+    deleteFlow: db.prepare('DELETE FROM flows WHERE id = ?'),
+
+    // ---------- 执行记录 ----------
+    listExecutions: db.prepare(`
+      SELECT id, flow_id, flow_name, flow_type, project_id, business,
+             status, started_at, finished_at, summary_json
+      FROM executions ORDER BY rowid DESC
+    `),
+    getExecutionRow: db.prepare('SELECT * FROM executions WHERE id = ?'),
+    saveExecutionContext: db.prepare('UPDATE executions SET context_json = ?, updated_at = ? WHERE id = ?'),
+    upsertStep: db.prepare(`
+      INSERT INTO execution_steps (execution_id, seq, node_id, status, data_json)
+      VALUES (@executionId, @seq, @nodeId, @status, @dataJson)
+      ON CONFLICT(execution_id, seq) DO UPDATE SET
+        node_id   = excluded.node_id,
+        status    = excluded.status,
+        data_json = excluded.data_json
+    `),
+    listSteps: db.prepare('SELECT data_json FROM execution_steps WHERE execution_id = ? ORDER BY seq'),
+    deleteSteps: db.prepare('DELETE FROM execution_steps WHERE execution_id = ?'),
+    listEvents: db.prepare(`
+      SELECT seq, ts, type, payload_json FROM execution_events
+      WHERE execution_id = ? ORDER BY seq
+    `),
+    insertEvent: db.prepare(`
+      INSERT OR REPLACE INTO execution_events (execution_id, seq, ts, type, payload_json)
+      VALUES (?, ?, ?, ?, ?)
+    `),
+    deleteEvents: db.prepare('DELETE FROM execution_events WHERE execution_id = ?'),
+    getEventSeq: db.prepare('SELECT event_seq FROM executions WHERE id = ?'),
+    setEventSeq: db.prepare('UPDATE executions SET event_seq = ?, updated_at = ? WHERE id = ?'),
+    saveExecutionMeta: db.prepare(`
+      INSERT INTO executions (id, flow_id, flow_name, flow_type, project_id, business,
+                              status, started_at, finished_at, summary_json, created_at, updated_at)
+      VALUES (@id, @flowId, @flowName, @flowType, @projectId, @business,
+              @status, @startedAt, @finishedAt, @summaryJson, @createdAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET
+        flow_id      = COALESCE(excluded.flow_id, executions.flow_id),
+        flow_name    = COALESCE(excluded.flow_name, executions.flow_name),
+        flow_type    = COALESCE(excluded.flow_type, executions.flow_type),
+        project_id   = COALESCE(excluded.project_id, executions.project_id),
+        business     = COALESCE(excluded.business, executions.business),
+        status       = COALESCE(excluded.status, executions.status),
+        started_at   = COALESCE(excluded.started_at, executions.started_at),
+        finished_at  = COALESCE(excluded.finished_at, executions.finished_at),
+        summary_json = COALESCE(excluded.summary_json, executions.summary_json),
+        updated_at   = excluded.updated_at
+    `),
+
+    // ---------- 项目 ----------
+    listProjects: db.prepare('SELECT data_json FROM projects ORDER BY rowid DESC'),
+    listProjectSummaries: db.prepare(`
+      SELECT id, name, description, code_path, service_base_url, apifox_project_id,
+             interface_count, folders_json, scan_summary_json, created_at, updated_at
+      FROM projects ORDER BY rowid DESC
+    `),
+    getProject: db.prepare('SELECT data_json FROM projects WHERE id = ?'),
+    saveProject: db.prepare(`
+      INSERT INTO projects (id, name, description, code_path, service_base_url, apifox_project_id,
+                            interface_count, folders_json, scan_summary_json, data_json,
+                            created_at, updated_at)
+      VALUES (@id, @name, @description, @codePath, @serviceBaseUrl, @apifoxProjectId,
+              @interfaceCount, @foldersJson, @scanSummaryJson, @dataJson, @createdAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET
+        name              = excluded.name,
+        description       = excluded.description,
+        code_path         = excluded.code_path,
+        service_base_url  = excluded.service_base_url,
+        apifox_project_id = excluded.apifox_project_id,
+        interface_count   = excluded.interface_count,
+        folders_json      = excluded.folders_json,
+        scan_summary_json = excluded.scan_summary_json,
+        data_json         = excluded.data_json,
+        updated_at        = excluded.updated_at
+    `),
+    deleteProject: db.prepare('DELETE FROM projects WHERE id = ?'),
+
+    // ---------- 应用元数据（迁移标记 / 目录白名单等） ----------
+    getAppMeta: db.prepare('SELECT value FROM app_meta WHERE key = ?'),
+    setAppMeta: db.prepare(
+      'INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    ),
+
+    // ---------- 缺陷 ----------
+    listBugs: db.prepare('SELECT data_json FROM bugs ORDER BY rowid DESC'),    getBug: db.prepare('SELECT data_json FROM bugs WHERE id = ?'),
+    saveBug: db.prepare(`
+      INSERT INTO bugs (id, project_id, flow_id, status, data_json, created_at, updated_at)
+      VALUES (@id, @projectId, @flowId, @status, @dataJson, @createdAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id,
+        flow_id    = excluded.flow_id,
+        status     = excluded.status,
+        data_json  = excluded.data_json,
+        updated_at = excluded.updated_at
+    `),
+    deleteBug: db.prepare('DELETE FROM bugs WHERE id = ?'),
+  }
+
+  const flowRow = (row) => (row ? parse(row.graph_json, null) : null)
+  const projectRow = (row) => (row ? parse(row.data_json, null) : null)
+  const bugRow = (row) => (row ? parse(row.data_json, null) : null)
+
+  /** 批量追加事件：seq 由 executions.event_seq 统一分配，保证执行内严格自增 */
+  const appendEvents = db.transaction((executionId, events) => {
+    if (!events?.length) return 0
+    let seq = s.getEventSeq.get(executionId)?.event_seq || 0
+    for (const evt of events) {
+      seq += 1
+      s.insertEvent.run(executionId, seq, evt.ts ?? null, evt.type ?? null, JSON.stringify(evt.payload ?? null))
+    }
+    s.setEventSeq.run(seq, Date.now(), executionId)
+    return events.length
+  })
+
+  /** 兼容旧调用：整份覆盖（只在测试/导入整段历史时使用，不在执行热路径） */
+  const replaceDetail = db.transaction((exec) => {
+    const now = Date.now()
+    s.saveExecutionMeta.run({
+      id: exec.id,
+      flowId: exec.flowId ?? null,
+      flowName: exec.flowName ?? null,
+      flowType: exec.flowType ?? null,
+      projectId: exec.projectId ?? null,
+      business: exec.business ?? null,
+      status: exec.status ?? null,
+      startedAt: exec.startedAt ?? null,
+      finishedAt: exec.finishedAt ?? null,
+      summaryJson: exec.summary ? JSON.stringify(exec.summary) : null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    s.saveExecutionContext.run(
+      JSON.stringify({ nodes: exec.nodes || [], edges: exec.edges || [], vars: exec.vars || {} }),
+      now,
+      exec.id
+    )
+    s.deleteSteps.run(exec.id)
+    s.deleteEvents.run(exec.id)
+    s.setEventSeq.run(0, now, exec.id)
+    ;(exec.steps || []).forEach((step, i) => {
+      const { seq: stepSeq, ...data } = step
+      s.upsertStep.run({
+        executionId: exec.id,
+        seq: stepSeq ?? i + 1,
+        nodeId: step.nodeId ?? null,
+        status: step.status ?? null,
+        dataJson: JSON.stringify(data),
+      })
+    })
+    appendEvents(exec.id, exec.events || [])
+  })
+
+  const store = {
+    // ---------- 流程 ----------
+    listFlows() {
+      return s.listFlows.all().map(flowRow)
+    },
+    getFlow(id) {
+      return flowRow(s.getFlow.get(id))
+    },
+    saveFlow(flow) {
+      if (!flow.id) flow.id = crypto.randomUUID()
+      const now = Date.now()
+      flow.updatedAt = now
+      if (!s.getFlow.get(flow.id)) flow.createdAt = now
+      s.saveFlow.run({
+        id: flow.id,
+        projectId: flow.projectId ?? null,
+        name: flow.name ?? null,
+        type: flow.type ?? null,
+        business: flow.business ?? null,
+        graphJson: JSON.stringify(flow),
+        createdAt: flow.createdAt ?? now,
+        updatedAt: now,
+      })
+      return flow
+    },
+    deleteFlow(id) {
+      s.deleteFlow.run(id)
+    },
+
+    // ---------- 执行记录 ----------
+    listExecutions() {
+      return s.listExecutions.all().map((row) => ({
+        id: row.id,
+        flowId: row.flow_id,
+        flowName: row.flow_name,
+        flowType: row.flow_type,
+        projectId: row.project_id,
+        business: row.business,
+        status: row.status,
+        startedAt: row.started_at,
+        finishedAt: row.finished_at,
+        summary: parse(row.summary_json, null),
+      }))
+    },
+    saveExecutionMeta(meta) {
+      const now = Date.now()
+      s.saveExecutionMeta.run({
+        id: meta.id,
+        flowId: meta.flowId ?? null,
+        flowName: meta.flowName ?? null,
+        flowType: meta.flowType ?? null,
+        projectId: meta.projectId ?? null,
+        business: meta.business ?? null,
+        status: meta.status ?? null,
+        startedAt: meta.startedAt ?? null,
+        finishedAt: meta.finishedAt ?? null,
+        summaryJson: meta.summary ? JSON.stringify(meta.summary) : null,
+        createdAt: now,
+        updatedAt: now,
+      })
+    },
+    saveExecutionDetail(exec) {
+      replaceDetail(exec)
+    },
+    /** 执行上下文（nodes/edges/vars）每次执行只写一次，避免每节点重写 */
+    saveExecutionContext(executionId, context) {
+      return s.saveExecutionContext.run(
+        JSON.stringify({ nodes: context?.nodes || [], edges: context?.edges || [], vars: context?.vars || {} }),
+        Date.now(),
+        executionId
+      ).changes
+    },
+    /** 节点开始 / 状态变化 / 结束都只写自己这一行（UPSERT by seq） */
+    saveExecutionStep(executionId, step) {
+      if (!Number.isInteger(step?.seq) || step.seq <= 0) throw new Error('saveExecutionStep 需要正整数 seq')
+      const { seq, ...data } = step
+      s.upsertStep.run({
+        executionId,
+        seq,
+        nodeId: step.nodeId ?? null,
+        status: step.status ?? null,
+        dataJson: JSON.stringify(data),
+      })
+      return seq
+    },
+    /** 事件批量提交；seq 自增，天然支持断线重放（M2-5） */
+    appendExecutionEvents(executionId, events) {
+      return appendEvents(executionId, events)
+    },
+    getExecutionDetail(id) {
+      const row = s.getExecutionRow.get(id)
+      if (!row) return null
+      const context = parse(row.context_json, null) || parse(row.detail_json, null) || {}
+      const steps = s.listSteps
+        .all(id)
+        .map((r) => parse(r.data_json, null))
+        .filter(Boolean)
+      const events = s.listEvents.all(id).map((r) => ({
+        executionId: id,
+        type: r.type,
+        payload: parse(r.payload_json, null),
+        ts: r.ts,
+      }))
+      return {
+        id: row.id,
+        flowId: row.flow_id,
+        flowName: row.flow_name,
+        flowType: row.flow_type,
+        projectId: row.project_id,
+        business: row.business,
+        status: row.status,
+        startedAt: row.started_at,
+        finishedAt: row.finished_at,
+        summary: parse(row.summary_json, null),
+        nodes: context.nodes || [],
+        edges: context.edges || [],
+        steps,
+        events,
+        vars: context.vars || {},
+      }
+    },
+
+    // ---------- 应用元数据 ----------
+    getAppMeta(key) {
+      const row = s.getAppMeta.get(String(key))
+      return row ? row.value : null
+    },
+    setAppMeta(key, value) {
+      s.setAppMeta.run(String(key), String(value))
+      return value
+    },
+
+    // ---------- 项目 ----------
+    listProjects() {
+      return s.listProjects.all().map(projectRow)
+    },
+    /** 新增：列表页投影，避免把 3.4 MB 的 interfaces 读进内存 */
+    listProjectSummaries() {
+      return s.listProjectSummaries.all().map((row) => ({
+        id: row.id,
+        name: row.name,
+        description: row.description || '',
+        codePath: row.code_path || '',
+        serviceBaseUrl: row.service_base_url || '',
+        apifoxProjectId: row.apifox_project_id || '',
+        interfaceCount: row.interface_count || 0,
+        folders: parse(row.folders_json, []),
+        scan: parse(row.scan_summary_json, null),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }))
+    },
+    getProject(id) {
+      return projectRow(s.getProject.get(id))
+    },
+    saveProject(project) {
+      if (!project.id) project.id = crypto.randomUUID()
+      const now = Date.now()
+      project.updatedAt = now
+      if (!s.getProject.get(project.id)) project.createdAt = now
+      const interfaces = project.interfaces || []
+      s.saveProject.run({
+        id: project.id,
+        name: project.name || '未命名项目',
+        description: project.description || '',
+        codePath: project.codePath || '',
+        serviceBaseUrl: project.serviceBaseUrl || '',
+        apifoxProjectId: project.apifox?.projectId || '',
+        interfaceCount: project.interfaceIds?.length || 0,
+        foldersJson: JSON.stringify(foldersOf(interfaces)),
+        scanSummaryJson: project.scan ? JSON.stringify(scanSummaryOf(project.scan)) : null,
+        dataJson: JSON.stringify(project),
+        createdAt: project.createdAt ?? now,
+        updatedAt: now,
+      })
+      return project
+    },
+    deleteProject(id) {
+      s.deleteProject.run(id)
+    },
+
+    // ---------- 缺陷 ----------
+    listBugs() {
+      return s.listBugs.all().map(bugRow)
+    },
+    saveBug(bug) {
+      if (!bug.id) bug.id = crypto.randomUUID()
+      const now = Date.now()
+      bug.updatedAt = now
+      if (!s.getBug.get(bug.id)) bug.createdAt = now
+      s.saveBug.run({
+        id: bug.id,
+        projectId: bug.projectId ?? null,
+        flowId: bug.flowId ?? null,
+        status: bug.status ?? null,
+        dataJson: JSON.stringify(bug),
+        createdAt: bug.createdAt ?? now,
+        updatedAt: now,
+      })
+      return bug
+    },
+    deleteBug(id) {
+      s.deleteBug.run(id)
+    },
+  }
+
+  return store
+}

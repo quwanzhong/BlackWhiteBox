@@ -1,9 +1,10 @@
 import crypto from 'node:crypto'
 import { store } from '../store.js'
 import { executeNode } from './executor.js'
-import { resolvePath } from './jsonpath.js'
+import { resolvePath, resolveTokens } from './jsonpath.js'
 import { runChecks } from './validators.js'
 import { sessions } from './registry.js'
+import { evaluateCondition } from '../security/expression.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -31,6 +32,10 @@ export class RunSession {
     this.manualWaiters = new Map()
     this.nodeMap = new Map((flow.nodes || []).map((n) => [n.id, n]))
     this.executed = new Set()
+    // M1-2：步骤按行落库、事件攒批提交（20 条或 200 ms）
+    this.stepSeq = 0
+    this.pendingEvents = []
+    this.flushTimer = null
   }
 
   room() {
@@ -40,8 +45,35 @@ export class RunSession {
   emit(type, payload = {}) {
     const evt = { executionId: this.executionId, type, payload, ts: Date.now() }
     this.events.push(evt)
+    this.pendingEvents.push(evt)
+    this.scheduleFlush()
     this.io.to(this.room()).emit('exec_event', evt)
     return evt
+  }
+
+  scheduleFlush() {
+    if (this.pendingEvents.length >= 20) return this.flushEvents()
+    if (this.flushTimer) return
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null
+      this.flushEvents()
+    }, 200)
+    this.flushTimer.unref?.()
+  }
+
+  /** 把待写事件一次性写入（seq 由 store 统一分配，保证严格自增） */
+  flushEvents() {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer)
+      this.flushTimer = null
+    }
+    if (!this.pendingEvents.length) return
+    const batch = this.pendingEvents.splice(0)
+    try {
+      store.appendExecutionEvents(this.executionId, batch)
+    } catch (err) {
+      console.error('[execution] 事件写入失败：', err)
+    }
   }
 
   log(message, level = 'info') {
@@ -68,20 +100,46 @@ export class RunSession {
       ...this.meta(),
       nodes: this.flow.nodes || [],
       edges: this.flow.edges || [],
-      steps: this.steps,
+      // seq 只服务于"同一节点覆盖同一行"，对外契约与落库后的 step 保持一致
+      steps: this.steps.map(({ seq: _seq, ...step }) => step),
       events: this.events,
       vars: this.vars,
     }
   }
 
-  persist() {
-    store.saveExecutionDetail(this.detail())
+  /** 上下文（nodes/edges/vars）只在开始/结束/停止时写，执行热路径不碰 */
+  saveContext() {
+    store.saveExecutionContext(this.executionId, {
+      nodes: this.flow.nodes || [],
+      edges: this.flow.edges || [],
+      vars: this.vars,
+    })
+  }
+
+  /** 步骤写库：创建与每次状态变化都调用，同一 seq 覆盖同一行（成本与历史长度无关） */
+  saveStep(step) {
+    if (!step.seq) step.seq = ++this.stepSeq
+    store.saveExecutionStep(this.executionId, step)
+    return step
+  }
+
+  pushStep(step) {
+    this.steps.push(step)
+    this.saveStep(step)
+    return step
+  }
+
+  saveMeta() {
     store.saveExecutionMeta(this.meta())
+  }
+
+  persist() {
+    this.flushEvents()
   }
 
   async start() {
     store.saveExecutionMeta(this.meta())
-    this.persist()
+    this.saveContext()
     this.emit('flow_start', {
       flowId: this.flow.id,
       flowName: this.flow.name,
@@ -146,7 +204,7 @@ export class RunSession {
     // 未执行到的节点统一标记为跳过
     for (const n of nodes) {
       if (!this.executed.has(n.id)) {
-        this.steps.push({
+        this.pushStep({
           id: crypto.randomUUID(),
           nodeId: n.id,
           nodeName: n.name,
@@ -180,7 +238,7 @@ export class RunSession {
       extracted: null,
       error: null,
     }
-    this.steps.push(step)
+    this.pushStep(step)
     this.emit('step_start', { nodeId, nodeName: node.name, stepId: step.id })
     this.log(`▶ 开始执行：${node.name}`)
 
@@ -188,6 +246,7 @@ export class RunSession {
       if ((node.action?.type || 'http') === 'manual') {
         // 白盒 / 人工步骤：暂停等待测试人员确认
         step.status = 'waiting'
+        this.saveStep(step)
         this.persist()
         this.emit('manual_wait', {
           nodeId,
@@ -267,18 +326,22 @@ export class RunSession {
         : `✘ 未通过：${node.name}${step.error ? `（${step.error}）` : ''}`,
       step.status === 'passed' ? 'success' : 'error'
     )
+    this.saveStep(step)
     this.persist()
     return step.status === 'passed'
   }
 
-  /** 条件表达式求值：支持 $.code == 0 && $.data.ok 这类写法 */
+  /**
+   * 条件表达式求值：支持 $.code == 0 && $.data.ok 这类写法。
+   * M1-3 起走受限求值器（security/expression.js），不再使用 new Function：
+   * 流程数据里写 process.exit() 只会得到一个解析错误，不会执行。
+   */
   evalCondition(expr) {
     try {
-      const jsExpr = String(expr)
-        .replace(/\$\.([A-Za-z0-9_.\[\]'"-]+)/g, (_m, p) => `__p('$.${p}')`)
-        .replace(/\{\{\s*(\w+)\s*\}\}/g, (_m, k) => JSON.stringify(this.vars[k]))
-      const fn = new Function('__p', `"use strict"; return (${jsExpr});`)
-      return !!fn((p) => (this.last ? resolvePath(this.last.data, p) : undefined))
+      return evaluateCondition(expr, {
+        vars: this.vars,
+        path: (tokens) => resolveTokens(this.last?.data, tokens),
+      })
     } catch (e) {
       this.log(`条件表达式解析失败：${expr}（${e.message}）`, 'warn')
       return false
@@ -303,6 +366,7 @@ export class RunSession {
     this.status = 'paused'
     this.emit('paused', {})
     this.log('⏸ 执行已暂停', 'warn')
+    this.saveMeta()
     this.persist()
     return true
   }
@@ -313,6 +377,7 @@ export class RunSession {
     this.status = 'running'
     this.emit('resumed', {})
     this.log('▶ 执行已恢复')
+    this.saveMeta()
     this.persist()
     return true
   }
@@ -328,6 +393,9 @@ export class RunSession {
       resolver({ pass: false, note: '执行已手动停止' })
     }
     this.manualWaiters.clear()
+    this.saveContext()
+    this.saveMeta()
+    this.persist()
     return true
   }
 
@@ -358,8 +426,10 @@ export class RunSession {
               ? '所有实际输出均符合流程理想输出'
               : '步骤执行通过，但存在输出不匹配项',
     }
-    this.persist()
+    this.saveContext() // 响应提取出的变量在结束时一并落库（与旧 JSON 行为一致）
+    this.saveMeta()
     this.emit('flow_end', { status: this.status, summary: this.summary })
+    this.persist()
     sessions.delete(this.executionId)
   }
 }

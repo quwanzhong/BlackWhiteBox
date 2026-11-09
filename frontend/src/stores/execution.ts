@@ -1,13 +1,24 @@
 import { defineStore } from 'pinia'
 import { io, type Socket } from 'socket.io-client'
 import type { NodeStatus } from '../types/flow'
+import { getToken } from '../security/token'
 
 let socket: Socket | null = null
 let bound = false
 
 function getSocket(): Socket {
   if (!socket) {
-    socket = io({ path: '/socket.io', transports: ['websocket', 'polling'] })
+    // S3：WebSocket 握手同样要令牌，否则任何页面都能订阅执行事件
+    socket = io({
+      path: '/socket.io',
+      transports: ['websocket', 'polling'],
+      auth: { token: getToken() },
+    })
+    socket.on('connect_error', (err) => {
+      if (String(err?.message || '').includes('unauthorized')) {
+        console.error('[ws] 未授权：令牌缺失或已失效，请刷新页面')
+      }
+    })
   }
   return socket
 }

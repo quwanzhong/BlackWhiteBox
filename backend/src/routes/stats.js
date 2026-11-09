@@ -13,7 +13,7 @@ router.get('/', (_req, res) => {
     flowTotal: flows.length,
     blackboxCount: flows.filter((f) => f.type === 'blackbox').length,
     whiteboxCount: flows.filter((f) => f.type === 'whitebox').length,
-    projectCount: store.listProjects().length,
+    projectCount: store.listProjectSummaries().length,
     bugTotal: store.listBugs().length,
     openBugCount: store.listBugs().filter((b) => !['closed', 'verified', 'rejected'].includes(b.status)).length,
     execTotal: execs.length,

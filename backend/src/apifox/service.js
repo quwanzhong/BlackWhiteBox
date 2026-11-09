@@ -120,7 +120,7 @@ function inlineFileRefs(node, files, chain = new Set()) {
     const ref = node.$ref
     const target = files.get(ref)
     if (isPlainObject(target) && !chain.has(ref)) {
-      const { $ref, ...rest } = node
+      const { $ref: _ref, ...rest } = node
       const nextChain = new Set(chain).add(ref)
       // 官方包 index.json 中会附带 { get: { summary } } 这类摘要，
       // 必须以引用文件里的完整定义为准，避免摘要覆盖完整 operation。
@@ -159,7 +159,7 @@ function resolveLocalRefs(node, root, stack = new Set()) {
       if (target !== undefined) {
         const nextStack = new Set(stack).add(ref)
         const resolved = resolveLocalRefs(structuredClone(target), root, nextStack)
-        const { $ref, ...rest } = node
+        const { $ref: _ref, ...rest } = node
         const siblings = resolveLocalRefs(rest, root, nextStack)
         if (isPlainObject(resolved)) return { ...resolved, ...siblings }
         return resolved

@@ -26,6 +26,10 @@ analyzers/java-analyzer/*.jar
 analyzers/java-analyzer/flows.json
 *.class
 
+# 白盒 PoC（jar 可由脚本重下，out 为运行产物）
+poc/jacoco/tools/*.jar
+poc/jacoco/out/
+
 # 环境
 .env
 .env.local

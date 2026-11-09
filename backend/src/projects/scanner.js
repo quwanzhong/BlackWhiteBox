@@ -246,8 +246,6 @@ export function matchCalls(calls, interfaces) {
     normalized: normalizeApiPath(it.path),
     segs: segments(it.path),
   }))
-  const byId = new Map(pool.map((it) => [it.id, it]))
-
   return calls.map((call) => {
     let best = null
     let bestScore = 0

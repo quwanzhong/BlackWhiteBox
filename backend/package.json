@@ -8,13 +8,22 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "seed": "node src/seed.js --force"
+    "seed": "node src/seed.js --force",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "test": "node --test"
   },
   "dependencies": {
     "apifox-mcp-server": "^0.0.18",
     "axios": "^1.7.9",
+    "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.4",
+    "globals": "^17.14.0"
   }
 }

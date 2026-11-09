@@ -58,9 +58,30 @@ function go(dir: string) {
 async function goManual() {
   const p = manual.value.trim()
   if (!p) return
-  const check = await api.fsCheck(p)
-  if (!check.ok) return ElMessage.error(check.error || '目录不可用')
-  load(check.path)
+  try {
+    const check = await api.fsCheck(p)
+    if (!check.ok) {
+      return ElMessage.error(
+        check.canRegister ? `${check.error}。可点右侧「登记目录」后访问` : check.error || '目录不可用'
+      )
+    }
+    load(check.path)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.error || '目录不可用')
+  }
+}
+
+/** S4：沙箱外的目录需要显式登记一次 */
+async function registerManual() {
+  const p = manual.value.trim()
+  if (!p) return ElMessage.warning('请先填写要登记的目录')
+  try {
+    const res = await api.fsAddRoot(p)
+    ElMessage.success(`已登记：${res.path}`)
+    load(res.path)
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.error || '登记失败')
+  }
 }
 
 function choose() {
@@ -85,6 +106,7 @@ const projectTip = computed(() => {
         <el-button size="small" :disabled="!parent" @click="parent && go(parent)">↑ 上一级</el-button>
         <el-input v-model="manual" size="small" placeholder="也可以直接粘贴绝对路径，如 C:\work\my-app" @keyup.enter="goManual" />
         <el-button size="small" @click="goManual">前往</el-button>
+        <el-button size="small" type="primary" plain @click="registerManual">登记目录</el-button>
       </div>
 
       <div v-if="!current" class="fp-roots">

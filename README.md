@@ -55,9 +55,25 @@ npm run build      # 构建前端
 npm start          # 启动后端，访问 http://localhost:3310
 ```
 
+> **安全基线（M1-3 起）**：服务默认只监听 `127.0.0.1`，所有 `/api` 请求与 WebSocket 握手都需要访问令牌。
+> 令牌首次启动生成到 `backend/data/.token`（也可用 `HEIBAIHE_TOKEN` 指定），页面会自动注入，正常打开即可；
+> 命令行/脚本请用 `Authorization: Bearer <token>`。需要局域网访问时显式设置 `HEIBAIHE_HOST=0.0.0.0`，
+> 并自行保管令牌（**不要把带令牌的地址发给别人**）。
+
 Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器）。
 
 首次启动会写入两条演示流程（黑盒走公开测试接口，需要联网；白盒是纯人工确认，不联网）。
+
+### 质量门禁
+
+```bash
+npm run lint   # 后端 + 前端 eslint（--max-warnings=0）
+npm test       # 后端 node --test（26 个用例）
+npm run ci     # lint → test → build，与 GitHub Actions 同序
+```
+
+CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint 与测试，并断言构建产物
+`frontend/dist/index.html` 不含令牌占位符（生产令牌只能由后端在响应时注入）。
 
 ### 目录
 
@@ -73,15 +89,17 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 ├── backend/                   Node.js + Express + Socket.IO + axios
 │   └── src/
 │       ├── engine/            调度器、HTTP 执行器、校验器、JSONPath、会话注册表
+│       ├── security/          访问令牌、Origin 白名单、目录沙箱、受限表达式求值器
+│       ├── infra/store/       SQLite 连接与迁移、执行行读写、JSON 一次性导入
 │       ├── apifox/            MCP 客户端（STDIO JSON-RPC）+ 文档还原 + 接口列表
 │       ├── projects/          源码调用扫描、路径匹配、业务分组、流程生成
 │       ├── importers/         OpenAPI（Apifox）→ 黑盒流程
 │       ├── routes/            flows / executions / import / apifox / projects / bugs / fs / stats
-│       ├── store.js           JSON 文件存储（换 SQLite/PostgreSQL 只改这一层）
+│       ├── store.js           存储门面（内部 SQLite + WAL，门面签名与旧 JSON 版一致）
 │       └── seed.js            演示数据
 ├── analyzers/java-analyzer/   Java 白盒调用链分析器（零依赖，自带示例工程）
-├── docs/                      DSL 规范、执行事件协议、Apifox MCP 接入说明
-└── data/                      运行时数据（git 忽略）
+├── docs/                      需求 / 架构 / PoC 与接入说明
+└── backend/data/              运行时数据（git 忽略；含 heibaihe.db 与 .token）
 ```
 
 ---
@@ -177,7 +195,7 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 | 后端 | Node.js + Express | 与前端同语言，单机部署简单 |
 | 黑盒执行 | axios | 纯 HTTP 接口层，毫秒级 |
 | Apifox 接入 | `apifox-mcp-server`（STDIO / JSON-RPC 2.0） | 官方 MCP Server，免导出直连项目文档 |
-| 存储 | JSON 文件（`backend/data`） | 单机零配置；`store.js` 隔离，后续可换 SQLite/PostgreSQL |
+| 存储 | SQLite（WAL，`better-sqlite3`） | 单机零配置；`store.js` 门面隔离，执行明细按行写入；桌面端再评估 `node:sqlite` |
 | 白盒分析 | Java 17 + `com.sun.source` | 零依赖，`javac` 直接构建 |
 
 ---
@@ -201,6 +219,10 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 
 ## 7. 文档
 
+- [现状盘点（AS-IS 与技术债）](docs/00-现状盘点.md)
+- [需求分析](docs/01-需求分析.md)
+- [架构与项目结构（SSOT）](docs/02-架构与项目结构.md)
+- [白盒 JaCoCo PoC 方案](docs/03-白盒PoC方案.md)
 - [流程 DSL 规范](docs/DSL.md)
 - [执行事件协议与动画状态机](docs/EXECUTION.md)
 - [Apifox MCP 直连说明](docs/APIFOX.md)

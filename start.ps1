@@ -3,7 +3,9 @@
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $port = if ($env:PORT) { $env:PORT } else { "3310" }
-$url = "http://localhost:$port"
+# 后端只监听 IPv4 回环（S1），这里写 127.0.0.1，避免 localhost 先解析到 ::1
+$hostAddr = if ($env:HEIBAIHE_HOST -and $env:HEIBAIHE_HOST -ne "0.0.0.0") { $env:HEIBAIHE_HOST } else { "127.0.0.1" }
+$url = "http://${hostAddr}:$port"
 
 function Write-Step($text) {
   Write-Host ""

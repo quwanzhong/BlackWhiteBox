@@ -1,23 +1,35 @@
 /**
  * 迷你 JSONPath：支持 $.a.b[0].c 形式的取值，够接口测试用了。
- * @param {*} obj 根对象
- * @param {string} path 如 "$.data.token"、"$"、"$.list[2].name"
  */
-export function resolvePath(obj, path) {
-  if (!path || typeof path !== 'string') return undefined
+
+/** "$.list[2].name" → ['list', 2, 'name']（沿用旧实现的宽松拆分） */
+export function pathToTokens(path) {
+  if (!path || typeof path !== 'string') return []
   const norm = path.replace(/^\$\.?/, '').trim()
-  if (!norm) return obj
-  const tokens = norm
+  if (!norm) return []
+  return norm
     .split('.')
     .flatMap((t) => t.split(/[\[\]]+/))
     .filter((t) => t !== '')
     .map((t) => (/^\d+$/.test(t) ? Number(t) : t))
+}
+
+/** 按 token 数组取值；任一层为 null/undefined 就返回 undefined */
+export function resolveTokens(obj, tokens) {
   let cur = obj
-  for (const tk of tokens) {
+  for (const tk of tokens || []) {
     if (cur == null) return undefined
     cur = cur[tk]
   }
   return cur
+}
+
+/**
+ * @param {*} obj 根对象
+ * @param {string} path 如 "$.data.token"、"$"、"$.list[2].name"
+ */
+export function resolvePath(obj, path) {
+  return resolveTokens(obj, pathToTokens(path))
 }
 
 /**

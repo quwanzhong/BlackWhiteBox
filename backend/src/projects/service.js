@@ -17,7 +17,7 @@ import {
   resolveConnection,
   saveConfig,
 } from '../apifox/service.js'
-import { analyzeProject, buildGroups, matchCalls } from './scanner.js'
+import { analyzeProject, buildGroups } from './scanner.js'
 
 function clean(value) {
   return String(value ?? '').trim()
@@ -89,7 +89,8 @@ export function summarize(project) {
 }
 
 export function listProjects() {
-  return store.listProjects().map(summarize)
+  // 列表页只要投影：避免把每个项目的 1737 条接口快照读进内存
+  return store.listProjectSummaries()
 }
 
 export function getProject(id) {

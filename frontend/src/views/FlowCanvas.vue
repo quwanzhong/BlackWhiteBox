@@ -29,7 +29,6 @@ const editingNode = ref<any>(null)
 const summaryVisible = ref(false)
 
 let graph: any = null
-let disposed = false
 
 const running = computed(() => exec.running && exec.flowId === flow.value?.id)
 
@@ -63,7 +62,6 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  disposed = true
   try { graph?.dispose() } catch { /* ignore */ }
   graph = null
 })

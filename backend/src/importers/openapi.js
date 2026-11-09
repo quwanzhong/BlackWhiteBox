@@ -60,7 +60,7 @@ function resolveLocalRefs(node, root, stack = new Set()) {
       if (target !== undefined) {
         const nextStack = new Set(stack).add(ref)
         const resolved = resolveLocalRefs(structuredClone(target), root, nextStack)
-        const { $ref, ...rest } = node
+        const { $ref: _ref, ...rest } = node
         const siblings = resolveLocalRefs(rest, root, nextStack)
         if (resolved && typeof resolved === 'object' && !Array.isArray(resolved)) {
           return { ...resolved, ...siblings }

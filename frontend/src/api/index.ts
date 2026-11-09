@@ -1,7 +1,32 @@
 import axios from 'axios'
 import type { FlowDsl } from '../types/flow'
+import { getToken, resetToken } from '../security/token'
 
 const http = axios.create({ baseURL: '/api', timeout: 30000 })
+
+// S3：每个请求带令牌（后端由 index.html 注入，无需用户输入）
+http.interceptors.request.use((config) => {
+  const token = getToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+let lastReload = 0
+http.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    // 令牌失效（通常是后端重启换了令牌）：重新加载页面拿最新注入值，5 秒内只重载一次
+    if (err?.response?.status === 401) {
+      const now = Date.now()
+      if (now - lastReload > 5000) {
+        lastReload = now
+        resetToken()
+        window.location.reload()
+      }
+    }
+    return Promise.reject(err)
+  }
+)
 
 export const api = {
   // 流程
@@ -45,6 +70,7 @@ export const api = {
   updateProject: (id: string, data: any): Promise<any> => http.put(`/projects/${id}`, data).then((r) => r.data),
   deleteProject: (id: string) => http.delete(`/projects/${id}`),
   fsRoots: (): Promise<any> => http.get('/fs/roots').then((r) => r.data),
+  fsAddRoot: (path: string): Promise<any> => http.post('/fs/roots', { path }).then((r) => r.data),
   fsList: (path = ''): Promise<any> => http.get('/fs/list', { params: { path } }).then((r) => r.data),
   fsCheck: (path: string): Promise<any> => http.get('/fs/check', { params: { path } }).then((r) => r.data),
   projectPull: (id: string, data?: any): Promise<any> =>
