@@ -161,21 +161,52 @@ test('环境服务：settings.coverage 校验与执行期下发', async () => {
     () => service.createEnvironment({ name: 'x', settings: { coverage: { enabled: 'yes' } } }),
     'ENV_BAD_COVERAGE'
   )
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: { classfiles: 42 } } }),
+    'ENV_BAD_COVERAGE'
+  )
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: { sourcefiles: 'a\nb' } } }),
+    'ENV_BAD_COVERAGE'
+  )
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: { cliPath: { path: 'x' } } } }),
+    'ENV_BAD_COVERAGE'
+  )
   expectEnvError(() => service.createEnvironment({ name: 'x', settings: 'coverage' }), 'ENV_BAD_SETTINGS')
 
   const env = service.createEnvironment({
     name: '覆盖率环境',
     settings: {
-      coverage: { host: '127.0.0.1', port: 6301, timeoutMs: 800 },
+      coverage: {
+        host: '127.0.0.1',
+        port: 6301,
+        timeoutMs: 800,
+        classfiles: ' target/classes ',
+        sourcefiles: 'src/main/java',
+        cliPath: 'tools/jacococli.jar',
+        javaBin: 'C:/jdk/bin/java.exe',
+      },
       retention: { days: 7 },
     },
   })
   assert.deepEqual(env.settings, {
-    coverage: { source: 'jacoco', host: '127.0.0.1', port: 6301, timeoutMs: 800, enabled: true },
+    coverage: {
+      source: 'jacoco',
+      host: '127.0.0.1',
+      port: 6301,
+      timeoutMs: 800,
+      enabled: true,
+      classfiles: 'target/classes',
+      sourcefiles: 'src/main/java',
+      cliPath: 'tools/jacococli.jar',
+      javaBin: 'C:/jdk/bin/java.exe',
+    },
     retention: { days: 7 },
   })
   const resolved = service.resolveEnvironment(env.id)
   assert.equal(resolved.settings.coverage.port, 6301, '执行链路必须拿到 settings')
+  assert.equal(resolved.settings.coverage.classfiles, 'target/classes', 'M3-2 分析配置必须下发')
 
   const cleared = service.updateEnvironment(env.id, { settings: { coverage: null } })
   assert.deepEqual(cleared.settings, {}, 'coverage:null 表示关闭取证')

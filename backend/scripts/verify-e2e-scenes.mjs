@@ -14,7 +14,7 @@
  *   场景 10 报告导出：JUnit/HTML/JSON 三格式 → S8 脱敏 → 计数一致 → 套件导出 → 400/404
  *   场景 11 会话恢复：真实子进程执行 → 强杀 → 重启后按断点续跑 → 断线重放 after → 人工确认收尾
  *   场景 12 覆盖率取证：环境 settings.coverage → 每节点 reset/dump → 快照落库/投影/事件 →
- *          agent 缺失时降级为 unavailable（节点结论不受影响）
+ *          结束后 jacococli 分析（M3-2）→ agent/CLI/classfiles 缺失时降级且不伪装成 0%
  *
  * 环境与 verify-m1-3 同口径：临时库 + 真实端口 + token；Apifox 侧只依赖本机缓存文件
  * （oas-cache.json，MCP 拉取的产物格式），不依赖外网。
@@ -152,6 +152,17 @@ async function waitDetail(executionId, predicate, timeoutMs = 10000) {
     await sleep(50)
   }
   throw new Error(`等待执行详情条件超时：${executionId}`)
+}
+/** M3-2：覆盖率分析在 flow_end 之后异步执行，用投影接口等它收敛 */
+async function waitCoverage(executionId, predicate, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() < deadline) {
+    last = await (await get(`/api/executions/${executionId}/coverage`)).json()
+    if (predicate(last)) return last
+    await sleep(50)
+  }
+  throw new Error(`等待覆盖率分析超时：${executionId}（last=${JSON.stringify(last)}）`)
 }
 
 async function waitSuiteRun(runId, timeoutMs = 30000) {
@@ -1530,10 +1541,12 @@ try {
   // 12.3 投影接口：按执行聚合计数，绝不返回原始 .exec
   const covText12 = JSON.stringify(cov12)
   check(
-    '12.3 GET /:id/coverage 投影：count=2、pending=2、不含 execBlob，原始证据只在库里',
+    '12.3 GET /:id/coverage 投影：count=2、pending=2、无分析失败，不含 execBlob，原始证据只在库里',
     cov12.executionId === run12.executionId &&
       cov12.count === 2 &&
       cov12.pending === 2 &&
+      cov12.analyzed === 0 &&
+      cov12.analysisFailed === 0 &&
       cov12.unavailable === 0 &&
       cov12.coverage.map((c) => c.nodeId).join() === 'n1,n2' &&
       cov12.coverage.every((c) => c.bytes > 5 && c.execBlob === undefined) &&
@@ -1608,6 +1621,70 @@ try {
   check(
     '12.8 未知执行的覆盖率接口 → 404 EXECUTION_NOT_FOUND',
     ghost12.status === 404 && (await ghost12.json()).code === 'EXECUTION_NOT_FOUND'
+  )
+
+  // 12.9 M3-2 分析失败：配置了 classfiles 但目录不存在。节点结论不受影响，
+  // 原始证据仍在（bytes>0），错误是稳定 code，投影计为 analysisFailed 而不是 pending。
+  const fakeCli12 = path.join(DIR, 'fake-jacococli.jar')
+  fs.writeFileSync(fakeCli12, '')
+  const missingClassesEnv12 = await (
+    await post('/api/environments', {
+      name: '场景12 类目录缺失',
+      projectId: project.id,
+      baseUrl: stubBase,
+      settings: {
+        coverage: {
+          host: '127.0.0.1',
+          port: agent12.port,
+          classfiles: path.join(DIR, 'no-such-classes'),
+          cliPath: fakeCli12,
+        },
+      },
+    })
+  ).json()
+  const run12a = await (
+    await post(`/api/flows/${flow12.id}/run`, { environmentId: missingClassesEnv12.id })
+  ).json()
+  const detail12a = await waitDetail(run12a.executionId, (d) =>
+    d.events.some((e) => e.type === 'coverage.analyzed')
+  )
+  const cov12a = await waitCoverage(
+    run12a.executionId,
+    (c) => c.analysisFailed === 2 && c.pending === 0
+  )
+  const analyzedEvt12 = detail12a.events.find((e) => e.type === 'coverage.analyzed')
+  check(
+    '12.9 分析失败可区分：执行仍 passed、证据保留、error=COVERAGE_CLASSFILES_MISSING、analysisFailed=2',
+    detail12a.status === 'passed' &&
+      cov12a.count === 2 &&
+      cov12a.analyzed === 0 &&
+      cov12a.pending === 0 &&
+      cov12a.analysisFailed === 2 &&
+      cov12a.coverage.every(
+        (c) =>
+          c.status === 'captured' &&
+          c.bytes > 5 &&
+          /^COVERAGE_CLASSFILES_MISSING: /.test(c.error) &&
+          c.result === null
+      ) &&
+      analyzedEvt12?.payload.analyzed === 0 &&
+      analyzedEvt12?.payload.failed === 2 &&
+      analyzedEvt12?.payload.coverage.every((c) => c.status === 'analysis_failed'),
+    `failed=${cov12a.analysisFailed} pending=${cov12a.pending} err=${cov12a.coverage[0]?.error}`
+  )
+
+  // 12.10 未配置 classfiles：只采集不分析，行保持 captured+pending，且不发 coverage.analyzed
+  await sleep(250)
+  const cov12b = await (await get(`/api/executions/${run12.executionId}/coverage`)).json()
+  const detail12b = await (await get(`/api/executions/${run12.executionId}`)).json()
+  check(
+    '12.10 未配置 classfiles：保持 captured+pending 且无 coverage.analyzed（不伪装成已分析/0%）',
+    cov12b.count === 2 &&
+      cov12b.pending === 2 &&
+      cov12b.analysisFailed === 0 &&
+      cov12b.coverage.every((c) => c.status === 'captured' && c.result === null && c.error === null) &&
+      !detail12b.events.some((e) => e.type === 'coverage.analyzed'),
+    `pending=${cov12b.pending} analyzed=${cov12b.analyzed} failed=${cov12b.analysisFailed}`
   )
 } finally {
   await agent12.close()

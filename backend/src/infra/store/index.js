@@ -304,10 +304,10 @@ export function createStore(db) {
         captured_at = excluded.captured_at,
         analyzed_at = excluded.analyzed_at
     `),
-    // 列表只给投影 + blob 长度：前端面板不需要几百 KB 的原始证据
+    // 列表只给投影 + blob 长度：前端面板不需要原始 .exec，但需要解析后的 result_json
     listCoverage: db.prepare(`
       SELECT id, execution_id, node_id, source, mode, status,
-             length(exec_blob) AS bytes, error, captured_at, analyzed_at
+             result_json, length(exec_blob) AS bytes, error, captured_at, analyzed_at
       FROM coverage WHERE execution_id = ? ORDER BY captured_at, rowid
     `),
     getCoverage: db.prepare('SELECT * FROM coverage WHERE id = ?'),

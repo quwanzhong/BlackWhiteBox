@@ -8,6 +8,7 @@ import { evaluateCondition } from '../security/expression.js'
 import { maskDeep } from '../environments/service.js'
 import { classifyStep, classifyExecution } from '../reporting/classify.js'
 import { createCoverageCollector } from '../coverage/collector.js'
+import { createCoverageAnalyzer } from '../coverage/analyzer.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -86,6 +87,14 @@ export class RunSession {
     this.coverage =
       opts.coverageCollector ||
       createCoverageCollector({
+        executionId: this.executionId,
+        settings: opts.environment?.settings,
+      })
+    // M3-2：执行结束后异步把 .exec 解析成行级结果；场景/单测可注入 analyzer。
+    // 默认分析器只在配置了 settings.coverage.classfiles 时才真正跑 jacococli。
+    this.coverageAnalyzer =
+      opts.coverageAnalyzer ||
+      createCoverageAnalyzer({
         executionId: this.executionId,
         settings: opts.environment?.settings,
       })
@@ -702,6 +711,45 @@ export class RunSession {
     this.persist()
     // M3-1：会话结束释放 agent 连接（collector 内部已吞掉关闭异常）
     this.coverage.close().catch(() => {})
+    // M3-2：分析必须在 flow_end 之后异步执行，不能拖住执行结论；
+    // `this.analysis` 暴露给场景/单测等待，生产代码不 await。
+    this.analysis = this.analyzeCoverage()
     sessions.delete(this.executionId)
+  }
+
+  /**
+   * 把本次执行的 captured 快照批量解析成行级覆盖率。
+   * 分析结果通过 `coverage.analyzed` 补发一条事件（此时 flow_end 已落库），
+   * 前端收到后重拉 `/coverage` 即可，不要求事件里带完整 files[]。
+   */
+  analyzeCoverage() {
+    if (!this.coverageAnalyzer?.run) return Promise.resolve(null)
+    return Promise.resolve()
+      .then(() => this.coverageAnalyzer.run())
+      .then((summary) => {
+        // classfiles 未配置 / 没有待分析证据时不发事件：行继续显示 pending=true
+        if (summary && summary.total > 0 && !summary.reason) {
+          this.emitCoverageAnalyzed(summary)
+        }
+        return summary
+      })
+      .catch((err) => {
+        this.log(`覆盖率分析失败：${err?.message || err}`, 'warn')
+        this.persist()
+        return null
+      })
+  }
+
+  emitCoverageAnalyzed(summary) {
+    this.emit('coverage.analyzed', {
+      executionId: summary.executionId,
+      analyzed: summary.analyzed,
+      failed: summary.failed,
+      skipped: summary.skipped,
+      total: summary.total,
+      durationMs: summary.durationMs,
+      coverage: summary.results,
+    })
+    this.flushEvents()
   }
 }

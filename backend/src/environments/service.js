@@ -32,6 +32,8 @@ const MAX_KEYS = 200
 const COVERAGE_SOURCES = ['jacoco']
 const MIN_COVERAGE_TIMEOUT_MS = 100
 const MAX_COVERAGE_TIMEOUT_MS = 30000
+/** M3-2：路径/命令字段上限，防止把整个 settings 塞进一列异常文本 */
+const MAX_COVERAGE_PATH = 1024
 export const SECRET_MASK = '***'
 /** 文本掩码最短明文长度：过短的值做全局替换会大面积误伤正常文本 */
 const MIN_MASK_LEN = 3
@@ -148,8 +150,35 @@ function normalizeHeaders(input) {
 }
 
 /**
+ * M3-1/M3-2：`settings.coverage` 的路径/命令字段。
+ * 只做「非空 + 长度 + 无控制字符」校验；存在性在分析时检查（环境可先配置、后拷 jar）。
+ * 空字符串等价于未配置，便于前端表单清空。
+ */
+function normalizeCoverageText(input, key) {
+  if (input === undefined || input === null) return null
+  if (typeof input !== 'string') {
+    throw new EnvironmentError('ENV_BAD_COVERAGE', `settings.coverage.${key} 必须是字符串`)
+  }
+  const value = input.trim()
+  if (!value) return null
+  if (value.length > MAX_COVERAGE_PATH || /[\u0000-\u001f]/.test(value)) {
+    throw new EnvironmentError(
+      'ENV_BAD_COVERAGE',
+      `settings.coverage.${key} 不合法：最长 ${MAX_COVERAGE_PATH} 字符且不能含控制字符`
+    )
+  }
+  return value
+}
+
+/**
  * M3-1：`settings.coverage` 校验。只允许 jacoco；端口/超时做范围限制，
  * 避免环境配置把执行链路带进「连 0 端口」或「等 10 分钟」的坑。
+ *
+ * M3-2 新增分析配置：
+ *   classfiles  —— 被测项目编译产物目录（jacococli `--classfiles`，缺失则不分析）
+ *   sourcefiles —— 源码目录（`--sourcefiles`，可选，只影响报告里的源码定位）
+ *   cliPath     —— jacococli.jar 路径（默认仓库 PoC 或 JACOCO_CLI）
+ *   javaBin     —— java 可执行文件（默认 PATH 中的 java，或 JAVA_BIN）
  */
 function normalizeCoverageSettings(input) {
   // 显式传 null 表示关闭覆盖率取证
@@ -208,7 +237,12 @@ function normalizeCoverageSettings(input) {
     enabled = input.enabled
   }
 
-  return { source, host, port, timeoutMs, enabled }
+  const out = { source, host, port, timeoutMs, enabled }
+  for (const key of ['classfiles', 'sourcefiles', 'cliPath', 'javaBin']) {
+    const value = normalizeCoverageText(input[key], key)
+    if (value) out[key] = value
+  }
+  return out
 }
 
 /** `settings` 是预留扩展位：未知键原样保留，已知键严格校验 */

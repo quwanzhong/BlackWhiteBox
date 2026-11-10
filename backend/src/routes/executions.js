@@ -96,11 +96,16 @@ router.get('/:id/coverage', (req, res) => {
     return res.status(404).json({ error: '执行记录不存在', code: 'EXECUTION_NOT_FOUND' })
   }
   const coverage = store.listExecutionCoverage(id)
+  const pending = coverage.filter((item) => item.status === 'captured' && !item.error)
+  const analysisFailed = coverage.filter((item) => item.status === 'captured' && item.error)
   res.json({
     executionId: id,
     count: coverage.length,
+    analyzed: coverage.filter((item) => item.status === 'analyzed').length,
     unavailable: coverage.filter((item) => item.status === 'unavailable').length,
-    pending: coverage.filter((item) => item.status === 'captured').length,
+    // pending 只算「采到了、还在等分析」；分析失败是另一种可见状态，不能一直 pending
+    pending: pending.length,
+    analysisFailed: analysisFailed.length,
     coverage,
   })
 })

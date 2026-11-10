@@ -50,6 +50,10 @@
 - **覆盖率取证（M3-1）**：环境里配置 JaCoCo agent（`settings.coverage`）后，每个 HTTP 节点执行前 `reset`、
   结束后 `dumpAndReset`，原始 `.exec` 按节点落进 SQLite，`GET /api/executions/:id/coverage` 返回不含原始字节的聚合投影，
   实时推送 `coverage.dump`；agent 连不上时该节点记 `unavailable` + 稳定错误码，**节点结论不受影响、绝不伪装成 0% 或通过**。
+- **覆盖率行级归因（M3-2）**：执行结束后异步跑 jacococli，把每个节点的 `.exec` 解析成行级 `covered/missed` 与类/方法
+  LINE 计数，写回 `coverage.result_json` 并补发一条 `coverage.analyzed`（不阻塞 `flow_end`）。未配置 `classfiles` 保持
+  `pending`；CLI/类目录缺失或分析失败保留原始证据并标 `analysisFailed`，API 用 `pending` / `analysisFailed` 区分
+  「还没分析」和「分析失败」，不会把两者混成 0%。
 - **缺陷反馈**：报告失败步骤一键提缺陷，记录流程、请求、实际值 / 期望值与校验差异，支持状态流转与按项目筛选。
 - **Java 白盒分析器**：JDK 内置解析 API 实现，零第三方依赖，输出调用链 JSON 直接导入。
 
@@ -251,7 +255,7 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 - [x] 执行 / 套件导出 JUnit · HTML · JSON + 导出脱敏（M2-4）
 - [x] 会话持久化 + 断线重放 `seq` / `after` + 强杀重启续跑（M2-5）
 - [x] 覆盖率取证：每节点 JaCoCo `.exec` 快照 + 聚合投影 API + 无证据降级（M3-1）
-- [ ] 覆盖率解析：jacococli 批量分析 + 行级 `covered/missed`（M3-2）
+- [x] 覆盖率解析：jacococli 逐节点分析 + 行级 `covered/missed` + `coverage.analyzed`（M3-2）
 - [ ] 覆盖率面板：节点徽标 / 未覆盖行 / 跳源码（M3-3）
 - [ ] 白盒断言 `mustHit` / `mustMiss`（M3-4）
 - [ ] 流程 DSL 版本化与导入校验

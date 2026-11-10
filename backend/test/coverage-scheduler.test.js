@@ -86,6 +86,7 @@ test('调度器：覆盖率取证只包 HTTP 节点，证据写入步骤并广�
     const tick = setInterval(() => session.confirmManual('n2', true, '已核对'), 10)
     await running
     clearInterval(tick)
+    await session.analysis
 
     // manual 节点不发 HTTP 请求，不做覆盖率取证
     assert.deepEqual(calls, ['begin:n1', 'end:n1', 'close'])
@@ -101,13 +102,15 @@ test('调度器：覆盖率取证只包 HTTP 节点，证据写入步骤并广�
     const detail = createStore(getDefaultDatabase()).getExecutionDetail(session.executionId)
     assert.equal(detail.steps.find((s) => s.nodeId === 'n1').coverage.status, 'captured')
     assert.equal(detail.steps.find((s) => s.nodeId === 'n1').coverageId, 'cov-n1')
+    // 未配置 classfiles：分析器不发 coverage.analyzed，行继续 pending
+    assert.ok(!session.events.some((e) => e.type === 'coverage.analyzed'))
+    assert.ok(!detail.events.some((e) => e.type === 'coverage.analyzed'))
   } finally {
     await new Promise((r) => server.close(r))
   }
 })
 
-test('调度器：采集器抛错也不影响节点结论', async () => {
-  const { server, port } = await startApi()
+test('调度器：采集器抛错也不影响节点结论', async () => {  const { server, port } = await startApi()
   try {
     const collector = {
       async begin() {
@@ -142,6 +145,7 @@ test('调度器：采集器抛错也不影响节点结论', async () => {
       { coverageCollector: collector }
     )
     await session.start()
+    await session.analysis
     assert.equal(session.status, 'passed')
     assert.equal(session.steps[0].coverageId, undefined)
     assert.ok(session.events.some((e) => String(e.payload.message).includes('boom-begin')))
@@ -149,4 +153,112 @@ test('调度器：采集器抛错也不影响节点结论', async () => {
   } finally {
     await new Promise((r) => server.close(r))
   }
+})
+
+test('调度器：flow_end 后异步分析并补发 coverage.analyzed，不阻塞执行结论', async () => {
+  const { server, port } = await startApi()
+  const base = `http://127.0.0.1:${port}`
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  let session
+  let runs = 0
+  const analyzer = {
+    async run() {
+      runs += 1
+      await gate
+      return {
+        executionId: session.executionId,
+        analyzed: 1,
+        failed: 0,
+        skipped: 0,
+        total: 1,
+        reason: null,
+        durationMs: 7,
+        results: [
+          {
+            coverageId: 'cov-n1',
+            nodeId: 'n1',
+            status: 'analyzed',
+            covered: 2,
+            missed: 1,
+            total: 3,
+            lineRate: 66.67,
+            files: 1,
+            classes: 1,
+            error: null,
+          },
+        ],
+      }
+    },
+  }
+  const collector = {
+    async begin(nodeId) {
+      return { nodeId, reset: true }
+    },
+    async end(nodeId) {
+      return {
+        id: `cov-${nodeId}`,
+        nodeId,
+        source: 'jacoco',
+        mode: 'per-node',
+        status: 'captured',
+        bytes: 12,
+        error: null,
+        pending: true,
+      }
+    },
+    async close() {},
+  }
+
+  try {
+    session = new RunSession(
+      {
+        id: 'f-coverage-analysis',
+        name: '覆盖率分析',
+        type: 'whitebox',
+        nodes: [
+          {
+            id: 'n1',
+            name: '命中订单',
+            action: { type: 'http', method: 'GET', url: `${base}/order`, headers: {} },
+            expected: { status: 200, checks: [] },
+          },
+        ],
+        edges: [],
+      },
+      ioStub,
+      { coverageCollector: collector, coverageAnalyzer: analyzer }
+    )
+    await session.start()
+    // 分析还挂在 gate 上，执行结论与 flow_end 已经完成
+    assert.equal(session.status, 'passed')
+    assert.equal(runs, 1)
+    assert.ok(!session.events.some((e) => e.type === 'coverage.analyzed'))
+    assert.equal(session.events.at(-1).type, 'flow_end')
+  } finally {
+    release()
+    await new Promise((r) => server.close(r))
+  }
+
+  const summary = await session.analysis
+  assert.equal(summary.analyzed, 1)
+  const event = session.events.find((e) => e.type === 'coverage.analyzed')
+  assert.ok(event)
+  assert.equal(event.seq, session.events.at(-1).seq)
+  assert.deepEqual(
+    {
+      analyzed: event.payload.analyzed,
+      failed: event.payload.failed,
+      total: event.payload.total,
+      nodeId: event.payload.coverage[0].nodeId,
+      covered: event.payload.coverage[0].covered,
+    },
+    { analyzed: 1, failed: 0, total: 1, nodeId: 'n1', covered: 2 }
+  )
+
+  const detail = createStore(getDefaultDatabase()).getExecutionDetail(session.executionId)
+  assert.equal(detail.events.at(-1).type, 'coverage.analyzed')
+  assert.equal(detail.events.at(-1).payload.coverage[0].status, 'analyzed')
 })

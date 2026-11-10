@@ -2,11 +2,13 @@
 --
 -- 设计取舍（docs/02 §6.2 / §7.1）：
 --   1) exec_blob 直接存 BLOB（PoC 实测单节点 118~158 B、空载 36 B），不落文件、不进导出包；
---   2) result_json 与原始证据分离：M3-2 解析出的 files/classes 写这里，exec_blob 永不改写，
+--   2) result_json 与原始证据分离：M3-2 解析出的 files/classes/totals 写这里，exec_blob 永不改写，
 --      解析规则升级时可重算，不会丢证据；
 --   3) 唯一索引 (execution_id, node_id)：一次执行每个节点一份快照；重跑是新执行，不覆盖历史；
 --   4) agent 不可用时仍写一行 status='unavailable' + error，UI 显示「无运行时证据」，
---      绝不把「没采到」伪装成「0% 覆盖」或「通过」。
+--      绝不把「没采到」伪装成「0% 覆盖」或「通过」；
+--   5) M3-2 只有 status='captured' 才会被分析；分析失败保持 captured + error（原始证据保留），
+--      与「未配置 classfiles 的 pending」通过 error 字段区分。
 PRAGMA user_version = 7;
 
 CREATE TABLE IF NOT EXISTS coverage (

@@ -131,7 +131,10 @@ test('collector：每个节点一份快照，按 node_id 覆盖写而不是追�
   await collector.end('n1')
 
   const rows = store.listExecutionCoverage('exec-nodes')
-  assert.deepEqual(rows.map((r) => r.nodeId), ['n1', 'n2'])
+  // 列表按 captured_at 排序；同一毫秒内是插入序，跨毫秒会因 n1 覆盖写而排到 n2 之后。
+  // 这里只关心「每节点恰好一行」，排序不是契约。
+  assert.deepEqual(rows.map((r) => r.nodeId).sort(), ['n1', 'n2'])
+  assert.equal(rows.length, 2)
   // 同一节点重跑覆盖写：保留最后一次的证据
   assert.equal(rows.find((r) => r.nodeId === 'n1').bytes, 3)
   assert.equal(rows.find((r) => r.nodeId === 'n2').bytes, 2)
