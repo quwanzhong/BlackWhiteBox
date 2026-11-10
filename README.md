@@ -106,13 +106,13 @@ npm run ci              # lint → test:coverage → test:frontend → verify �
 ```
 
 覆盖率只统计核心模块（`engine`、`environments`、`suites`、`reporting`、`projects/scanner`、`infra/store`、`security`、`coverage`），
-当前本地（Windows）为行 **96.25%** / 分支 **81.03%** / 函数 **94.49%**；路由与导入器等胶水层由
+CI（ubuntu-latest）为行 **96.21%** / 分支 **81.03%** / 函数 **94.49%**（本地 Windows 96.25% / 81.03% / 94.49%）；路由与导入器等胶水层由
 `backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 31 项 + 功能域 87 项 / 12 个场景）。
 
 CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑后端 lint、覆盖率门禁与场景验收，前端 lint → `npm run test`
-（事件同步时序回归 5 例）→ build，并断言构建产物 `frontend/dist/index.html` 不含令牌占位符
-（生产令牌只能由后端在响应时注入）。最近一次：run `42790781269`（sha `e4ad61a`）success，
-后端 **139/139**、行 **96.27%** / 分支 **80.77%** / 函数 **94.38%**。
+（事件同步 5 例 + 覆盖率视图模型 6 例）→ build，并断言构建产物 `frontend/dist/index.html` 不含令牌占位符
+（生产令牌只能由后端在响应时注入）。最近一次：run `42794184969`（sha `4040c94`）success，
+后端 **144/144**、行 **96.21%** / 分支 **81.03%** / 函数 **94.49%**。
 
 ### 目录
 
