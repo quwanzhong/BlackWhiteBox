@@ -7,6 +7,7 @@ import { useExecStore } from '../stores/execution'
 import { createGraph, renderFlow } from '../components/canvas/useCanvas'
 import ResultSummary from '../components/ResultSummary.vue'
 import type { FlowDsl } from '../types/flow'
+import { failureLabel, failureTag } from '../constants/failure'
 
 const route = useRoute()
 const router = useRouter()
@@ -79,6 +80,8 @@ function openBug(row: any) {
   const diffs = (row.checks?.results || []).filter((x: any) => !x.passed)
   bugForm.description = [
     `流程：${detail.value.flowName}`,
+    row.failureClass ? `失败归类：${failureLabel(row.failureClass)}` : '',
+    row.failureReason ? `归类原因：${row.failureReason}` : '',
     row.request ? `请求：${row.request.method} ${row.request.url}` : '',
     row.error ? `错误：${row.error}` : '',
     diffs.length ? `校验差异：\n${diffs.map((d: any) => `- ${d.path || d.label || d.type}：${d.message}`).join('\n')}` : '',
@@ -131,6 +134,11 @@ async function submitBug() {
           <span>执行 ID：{{ detail.id }}</span>
           <span>开始：{{ new Date(detail.startedAt).toLocaleString('zh-CN', { hour12: false }) }}</span>
           <span v-if="detail.summary">耗时：{{ (detail.summary.durationMs / 1000).toFixed(2) }}s</span>
+          <el-tooltip v-if="detail.failureClass" :content="detail.failureReason || failureLabel(detail.failureClass)" placement="top">
+            <el-tag size="small" effect="plain" :type="failureTag(detail.failureClass)">
+              失败归类：{{ failureLabel(detail.failureClass) }}
+            </el-tag>
+          </el-tooltip>
         </div>
       </div>
       <div class="page-actions">
@@ -151,6 +159,11 @@ async function submitBug() {
         <el-table-column type="expand">
           <template #default="{ row }">
             <div style="padding: 8px 16px">
+              <div v-if="row.failureClass" class="sp-kv">
+                <b>失败归类：</b>
+                <el-tag size="small" effect="plain" :type="failureTag(row.failureClass)">{{ failureLabel(row.failureClass) }}</el-tag>
+                <span v-if="row.failureReason" class="muted" style="margin-left: 8px">{{ row.failureReason }}</span>
+              </div>
               <div v-if="row.request" class="sp-kv"><b>实际请求：</b>{{ row.request.method }} {{ row.request.url }}</div>
               <pre v-if="row.request?.body" class="json-block">{{ pretty(row.request.body) }}</pre>
               <div v-if="row.expected" class="sp-kv"><b>理想输出：</b></div>
@@ -167,6 +180,16 @@ async function submitBug() {
         <el-table-column label="状态" width="86">
           <template #default="{ row }">
             <el-tag size="small" :type="statusTag(row.status)">{{ statusText[row.status] || row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="失败归类" width="130">
+          <template #default="{ row }">
+            <el-tooltip v-if="row.failureClass" :content="row.failureReason || failureLabel(row.failureClass)" placement="top">
+              <el-tag size="small" effect="plain" :type="failureTag(row.failureClass)">
+                {{ failureLabel(row.failureClass) }}
+              </el-tag>
+            </el-tooltip>
+            <span v-else class="diff-na">—</span>
           </template>
         </el-table-column>
         <el-table-column label="输出匹对" width="96">

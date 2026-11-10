@@ -110,10 +110,25 @@
 
 **Check**
 
+`type` 决定「拿什么比」，`op` 决定「怎么算通过」；两者一起也决定失败后的**归类**（见 §1.3）。
+
 ```json
 { "type": "json_path", "label": "订单号存在", "path": "$.data.orderId", "op": "exists", "value": null }
 { "type": "body_contains", "label": "包含 success", "value": "success" }
+{ "type": "schema", "label": "登录返回结构", "value": ["$.data.token", "$.data.role"] }
 ```
+
+| `type` | 说明 |
+|---|---|
+| `json_path`（默认） | 按 `path` 从响应体取值，与 `value` 按 `op` 比较 |
+| `body_contains` | 把响应体字符串化后判断是否包含 `value` 子串 |
+| `schema` | 响应**结构**断言：`value` = 必填字段路径数组（也可给单个字符串），全部命中才通过 |
+| `duration` | 耗时上限（由 `expected.maxDurationMs` 自动生成，一般不手写） |
+| `manual` | 人工确认结果（由白盒人工步骤自动生成） |
+
+`schema` 的取值口径与 `op: 'exists'` 一致：**取不到（`undefined`）或为 `null` 都算结构缺失**；
+`value` 留空属于流程写错，判不通过并提示「未配置必填字段路径」。失败文案形如
+`期望 存在 ["$.data.token","$.data.role"]，实际 "缺失 $.data.role"`。
 
 | `op` | 含义 | `value` |
 |---|---|---|
@@ -126,6 +141,22 @@
 | `type` | 类型为 | `string` / `number` / `boolean` / `object` / `array` / `null` |
 
 JSONPath 支持 `$.a.b`、`$.list[0].name`、`$`（根）。不支持通配符、过滤器。
+
+### 1.3 失败归类（自动，不需要在 DSL 里配）
+
+步骤 `failed` / `skipped` 时，引擎自动给出 `failureClass` + `failureReason`（规则见
+[`02-架构与项目结构.md` §9.1](./02-架构与项目结构.md)），报告列表、详情、套件与后续导出都取同一结果。
+
+| `failureClass` | 中文 | 与 DSL 的关系 |
+|---|---|---|
+| `network` | 网络不可达 | `action.url` 指向的主机连不上（环境 `baseUrl` 配错也算这类表现） |
+| `timeout` | 超时 | `action.timeout` 或 `expected.maxDurationMs` 超限 |
+| `status` | 状态码不符 | `expected.status` 未命中 |
+| `schema` | 结构不符 | `type: 'schema'` 断言未命中 —— 接口契约变了 |
+| `assertion` | 断言不符 | 其余 `json_path` / `body_contains` 断言未命中 |
+| `dependency` | 前置依赖 | 上游失败或 `condition` 未命中，本节点没跑 |
+| `script` | 脚本/配置 | 变量未解析、URL 未配置、不支持的 `action.type`（请求根本不发） |
+| `manual_reject` | 人工驳回 | 人工确认判不通过，`failureReason` 即测试人员备注 |
 
 ---
 

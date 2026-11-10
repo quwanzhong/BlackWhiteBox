@@ -57,6 +57,10 @@ export async function executeNode(node, ctx) {
   const timeout = action.timeout || 15000
 
   if (!url) throw new Error('节点未配置请求地址（url）')
+  // M2-3：替换后仍有 {{var}} 说明变量缺失，属于流程配置问题（script），不该带着字面量发请求
+  if (/\{\{\s*[\w.]+\s*\}\}/.test(String(url))) {
+    throw new Error(`变量未解析：${url}`)
+  }
 
   const startedAt = Date.now()
   try {

@@ -41,7 +41,8 @@ export const api = {
     id: string,
     payload: { variables?: Record<string, any>; environmentId?: string } = {}
   ): Promise<{ executionId: string }> => http.post(`/flows/${id}/run`, payload).then((r) => r.data),
-  listExecutions: (flowId?: string): Promise<any[]> => http.get('/executions', { params: { flowId } }).then((r) => r.data),
+  listExecutions: (params?: { flowId?: string; failureClass?: string }): Promise<any[]> =>
+    http.get('/executions', { params }).then((r) => r.data),
   getExecution: (id: string): Promise<any> => http.get(`/executions/${id}`).then((r) => r.data),
   pauseExecution: (id: string) => http.post(`/executions/${id}/pause`),
   resumeExecution: (id: string) => http.post(`/executions/${id}/resume`),

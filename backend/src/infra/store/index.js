@@ -53,15 +53,21 @@ export function createStore(db) {
     listExecutions: db.prepare(`
       SELECT id, flow_id, flow_name, flow_type, project_id, business,
              status, started_at, finished_at, summary_json, env_id, env_version,
-             suite_run_id
+             suite_run_id, failure_class, failure_reason
       FROM executions ORDER BY rowid DESC
     `),
     getExecutionRow: db.prepare('SELECT * FROM executions WHERE id = ?'),
     listExecutionsBySuiteRun: db.prepare(`
       SELECT id, flow_id, flow_name, flow_type, project_id, business,
              status, started_at, finished_at, summary_json, env_id, env_version,
-             suite_run_id
+             suite_run_id, failure_class, failure_reason
       FROM executions WHERE suite_run_id = ? ORDER BY started_at, rowid
+    `),
+    listExecutionsByFailureClass: db.prepare(`
+      SELECT id, flow_id, flow_name, flow_type, project_id, business,
+             status, started_at, finished_at, summary_json, env_id, env_version,
+             suite_run_id, failure_class, failure_reason
+      FROM executions WHERE failure_class = ? ORDER BY rowid DESC
     `),
     saveExecutionContext: db.prepare('UPDATE executions SET context_json = ?, updated_at = ? WHERE id = ?'),
     upsertStep: db.prepare(`
@@ -88,10 +94,12 @@ export function createStore(db) {
     saveExecutionMeta: db.prepare(`
       INSERT INTO executions (id, flow_id, flow_name, flow_type, project_id, business,
                               status, started_at, finished_at, summary_json,
-                              env_id, env_version, suite_run_id, created_at, updated_at)
+                              env_id, env_version, suite_run_id,
+                              failure_class, failure_reason, created_at, updated_at)
       VALUES (@id, @flowId, @flowName, @flowType, @projectId, @business,
               @status, @startedAt, @finishedAt, @summaryJson,
-              @envId, @envVersion, @suiteRunId, @createdAt, @updatedAt)
+              @envId, @envVersion, @suiteRunId,
+              @failureClass, @failureReason, @createdAt, @updatedAt)
       ON CONFLICT(id) DO UPDATE SET
         flow_id      = COALESCE(excluded.flow_id, executions.flow_id),
         flow_name    = COALESCE(excluded.flow_name, executions.flow_name),
@@ -105,6 +113,8 @@ export function createStore(db) {
         env_id       = COALESCE(excluded.env_id, executions.env_id),
         env_version  = COALESCE(excluded.env_version, executions.env_version),
         suite_run_id = COALESCE(excluded.suite_run_id, executions.suite_run_id),
+        failure_class  = COALESCE(excluded.failure_class, executions.failure_class),
+        failure_reason = COALESCE(excluded.failure_reason, executions.failure_reason),
         updated_at   = excluded.updated_at
     `),
 
@@ -260,21 +270,27 @@ export function createStore(db) {
   }
 
   const flowRow = (row) => (row ? parse(row.graph_json, null) : null)
-  const executionRow = (row) => ({
-    id: row.id,
-    flowId: row.flow_id,
-    flowName: row.flow_name,
-    flowType: row.flow_type,
-    projectId: row.project_id,
-    business: row.business,
-    status: row.status,
-    startedAt: row.started_at,
-    finishedAt: row.finished_at,
-    envId: row.env_id || null,
-    envVersion: row.env_version ?? null,
-    suiteRunId: row.suite_run_id || null,
-    summary: parse(row.summary_json, null),
-  })
+  const executionRow = (row) => {
+    const summary = parse(row.summary_json, null)
+    return {
+      id: row.id,
+      flowId: row.flow_id,
+      flowName: row.flow_name,
+      flowType: row.flow_type,
+      projectId: row.project_id,
+      business: row.business,
+      status: row.status,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+      envId: row.env_id || null,
+      envVersion: row.env_version ?? null,
+      suiteRunId: row.suite_run_id || null,
+      // 投影列优先；仅 summary 有归类的历史行也能在列表展示
+      failureClass: row.failure_class || summary?.failureClass || null,
+      failureReason: row.failure_reason || summary?.failureReason || null,
+      summary,
+    }
+  }
   const projectRow = (row) => (row ? parse(row.data_json, null) : null)
   const bugRow = (row) => (row ? parse(row.data_json, null) : null)
   const environmentRow = (row) =>
@@ -354,6 +370,8 @@ export function createStore(db) {
       envId: exec.envId ?? null,
       envVersion: exec.envVersion ?? null,
       suiteRunId: exec.suiteRunId ?? null,
+      failureClass: exec.failureClass ?? null,
+      failureReason: exec.failureReason ?? null,
       createdAt: now,
       updatedAt: now,
     })
@@ -432,6 +450,8 @@ export function createStore(db) {
         envId: meta.envId ?? null,
         envVersion: meta.envVersion ?? null,
         suiteRunId: meta.suiteRunId ?? null,
+        failureClass: meta.failureClass ?? null,
+        failureReason: meta.failureReason ?? null,
         createdAt: now,
         updatedAt: now,
       })
@@ -496,6 +516,8 @@ export function createStore(db) {
         envId: row.env_id || null,
         envVersion: row.env_version ?? null,
         suiteRunId: row.suite_run_id || null,
+        failureClass: row.failure_class || null,
+        failureReason: row.failure_reason || null,
         summary: parse(row.summary_json, null),
         nodes: context.nodes || [],
         edges: context.edges || [],
@@ -696,6 +718,10 @@ export function createStore(db) {
     },
     listExecutionsBySuiteRun(suiteRunId) {
       return s.listExecutionsBySuiteRun.all(suiteRunId).map(executionRow)
+    },
+    /** M2-3：按失败归类过滤（老数据未落库，路由层会先回填再过滤，见 routes/executions.js） */
+    listExecutionsByFailureClass(failureClass) {
+      return s.listExecutionsByFailureClass.all(failureClass).map(executionRow)
     },
   }
 

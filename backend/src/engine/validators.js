@@ -72,6 +72,26 @@ export function runChecks(expected, result) {
         type: 'body_contains', label: c.label, path: '$(响应体)',
         op: 'contains', value, actual, passed: actual.includes(value),
       }))
+    } else if (c.type === 'schema') {
+      // 结构断言：value = 必填字段路径数组（也可给单个路径）
+      // 口径与 exists 算子一致：取不到（undefined）或为 null 都算结构缺失
+      const required = (Array.isArray(c.value) ? c.value : [c.value]).filter(
+        (p) => typeof p === 'string' && p.trim()
+      )
+      const missing = required.filter((p) => {
+        const v = resolvePath(result.data, p)
+        return v === undefined || v === null
+      })
+      results.push(makeCheck({
+        type: 'schema', label: c.label || '响应结构', path: required.join(', ') || '$',
+        op: 'exists', value: required,
+        actual: !required.length
+          ? '未配置必填字段路径'
+          : missing.length
+            ? `缺失 ${missing.join('、')}`
+            : '字段齐全',
+        passed: required.length > 0 && missing.length === 0,
+      }))
     } else {
       // 默认 json_path 断言
       const actual = resolvePath(result.data, c.path)

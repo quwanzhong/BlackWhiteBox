@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { getSocket } from '../stores/execution'
+import { failureLabel, failureTag } from '../constants/failure'
 
 /**
  * 套件（M2-2）：把「23 条流程只能一条条跑」变成一次有策略的批量执行。
@@ -508,6 +509,20 @@ const runFlows = computed(() => currentRun.value?.summary?.flows || [])
           </el-table-column>
           <el-table-column label="尝试" width="90" align="center">
             <template #default="{ row }">{{ row.attempts || 0 }} 次</template>
+          </el-table-column>
+          <el-table-column label="失败归类" width="130">
+            <template #default="{ row }">
+              <el-tooltip
+                v-if="row.failureClass"
+                :content="row.failureReason || failureLabel(row.failureClass)"
+                placement="top"
+              >
+                <el-tag size="small" effect="plain" :type="failureTag(row.failureClass)">
+                  {{ failureLabel(row.failureClass) }}
+                </el-tag>
+              </el-tooltip>
+              <span v-else class="muted">-</span>
+            </template>
           </el-table-column>
           <el-table-column label="耗时" width="100">
             <template #default="{ row }">{{ fmtDuration(row.durationMs) }}</template>

@@ -59,7 +59,7 @@ interface ExecEvent {
 | `flow_start` | 会话开始 | `flowId` `flowName` `nodes[]`（`{id,name}`） |
 | `step_start` | 单个节点开始执行 | `nodeId` `nodeName` `stepId` |
 | `manual_wait` | 人工步骤等待确认 | `nodeId` `nodeName` `hint` |
-| `step_end` | 单个节点结束 | `nodeId` `nodeName` `status` `durationMs` `checks` `actual` `request` `error` `extracted` |
+| `step_end` | 单个节点结束 | `nodeId` `nodeName` `status` `durationMs` `checks` `actual` `request` `error` `extracted` `failureClass` `failureReason` |
 | `log` | 任意时刻 | `level`（`info`/`success`/`warn`/`error`）`message` |
 | `paused` | 手动暂停 | — |
 | `resumed` | 手动继续 | — |
@@ -74,7 +74,28 @@ interface ExecEvent {
 - `failed`：HTTP 异常、断言不通过、或人工确认不通过；
 - `skipped`：分支条件不满足、上游失败、或流程提前停止，未真正执行的节点在收尾时统一补发。
 
-### 3.2 `flow_end.summary`
+### 3.2 `step_end.failureClass` / `failureReason`（M2-3）
+
+`status = passed` 时两者为 `null`；`failed` / `skipped` 时由服务端归类器（`backend/src/reporting/classify.js`）
+当场算出并随事件、步骤、执行三处一起落库，前端只做展示，不再自行判定。
+
+| `failureClass` | 中文 | 命中条件 |
+|---|---|---|
+| `network` | 网络不可达 | 连接层错误（拒绝 / DNS / 证书 / 重置） |
+| `timeout` | 超时 | `ECONNABORTED`、节点 `timeout` 上限、耗时断言超限 |
+| `status` | 状态码不符 | 状态码 check 未通过 |
+| `schema` | 结构不符 | 结构 check（`type: 'schema'`）未通过 |
+| `assertion` | 断言不符 | JSONPath / 包含 / 正则等断言未通过 |
+| `dependency` | 前置依赖 | 本节点 `skipped`（上游失败或分支未命中） |
+| `script` | 脚本/配置 | 变量未解析、URL 未配置、节点类型不支持 |
+| `manual_reject` | 人工驳回 | 人工确认判「不通过」 |
+
+`failureReason` 是**面向人的一句话**，取自主判证据的原始文案（如 `期望 等于 500，实际 200`、
+`变量未解析：…`、人工备注），并且永远在 secret 掩码之后生成 —— URL 参数里的密钥只会以 `***` 出现。
+
+判定优先级与边界规则见 [`02-架构与项目结构.md` §9.1](./02-架构与项目结构.md)。
+
+### 3.3 `flow_end.summary`
 
 ```json
 {
@@ -85,7 +106,13 @@ interface ExecEvent {
   "skipped": 0,
   "matchedAll": true,
   "durationMs": 1832,
-  "message": "所有实际输出均符合流程理想输出"
+  "message": "所有实际输出均符合流程理想输出",
+  "failureClass": null,
+  "failureReason": null,
+  "failureClasses": {
+    "network": 0, "timeout": 0, "status": 0, "schema": 0,
+    "assertion": 0, "dependency": 0, "script": 0, "manual_reject": 0
+  }
 }
 ```
 
@@ -97,6 +124,9 @@ interface ExecEvent {
 | `matchedAll` | 所有**实际执行过**的步骤是否都符合理想输出 |
 | `durationMs` | 整体耗时 |
 | `message` | 面向人的结论文案 |
+| `failureClass` | 主归类 = **第一个**失败步骤的类别；无失败则 `null` |
+| `failureReason` | 主归类对应的文案（已掩码） |
+| `failureClasses` | 8 类各自计数；`passed` / `stopped` 执行里的 `skipped` 不计入 `dependency` |
 
 判定规则：
 
@@ -202,6 +232,18 @@ GET /api/executions/:id
 ```
 
 - 执行会话保存在内存（`registry.js`），**服务重启后进行中的会话会丢失**，但已落盘的历史报告仍可查看。
+
+### 7.1 报告列表与归类筛选
+
+```
+GET /api/executions                 → [ { id, flowId, flowName, status, failureClass, failureReason, … } ]
+GET /api/executions?failureClass=timeout&flowId=…   → 只返回该归类的执行
+```
+
+- 列表行自带 `failureClass` / `failureReason` 投影列（执行结束时写入），前端不做二次判定；
+- 非法归类值当作「未筛选」返回全量，不报错（避免前端枚举版本落后时列表空白）；
+- `GET /api/executions/:id` 详情对 **M2-3 之前的老执行** 现算补齐归类（`enrichExecutionDetail`，
+  幂等、不回写），因此筛选与导出口径和界面永远一致。
 
 ---
 

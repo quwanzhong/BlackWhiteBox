@@ -105,6 +105,38 @@ test('校验器：body_contains 对整个响应体做子串匹配', () => {
   assert.equal(check({ checks: [{ type: 'body_contains', value: 'object Object' }] }, { status: 200, data: circular }).matched, true)
 })
 
+test('校验器：schema 断言按必填路径判定响应结构', () => {
+  const data = { code: 0, data: { token: 't', user: { id: 1 } }, list: [{ id: 1 }] }
+
+  const ok = check(
+    { checks: [{ type: 'schema', label: '登录结构', value: ['$.code', '$.data.token', '$.list[0].id'] }] },
+    { status: 200, data }
+  )
+  assert.equal(ok.matched, true)
+  assert.equal(ok.results[1].type, 'schema')
+  assert.equal(ok.results[1].passed, true)
+
+  const miss = check(
+    { checks: [{ type: 'schema', label: '登录结构', value: ['$.data.token', '$.data.role'] }] },
+    { status: 200, data }
+  )
+  assert.equal(miss.matched, false)
+  assert.equal(miss.results[1].type, 'schema')
+  assert.match(miss.results[1].message, /缺失 \$\.data\.role/)
+
+  // 单个字符串路径同样支持；值为 null 按 exists 口径视为缺失
+  assert.equal(check({ checks: [{ type: 'schema', value: '$.code' }] }, { status: 200, data }).matched, true)
+  assert.equal(
+    check({ checks: [{ type: 'schema', value: '$.nil' }] }, { status: 200, data: { nil: null } }).matched,
+    false
+  )
+
+  // 没配必填路径属于流程问题：不通过且文案可解释
+  const empty = check({ checks: [{ type: 'schema', value: [] }] }, { status: 200, data })
+  assert.equal(empty.matched, false)
+  assert.match(empty.results[1].message, /未配置必填字段路径/)
+})
+
 test('校验器：耗时上限', () => {
   const expected = { maxDurationMs: 100, checks: [] }
   assert.equal(check(expected, { status: 200, data: {}, durationMs: 100 }).matched, true)

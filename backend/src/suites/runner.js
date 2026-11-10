@@ -41,6 +41,9 @@ class SuiteRunRunner {
       durationMs: 0,
       flaky: false,
       error: null,
+      // M2-3：失败归类（取最后一次尝试的执行级归类）
+      failureClass: null,
+      failureReason: null,
       settled: false,
     }))
     this.flowSessions = new Map() // index -> RunSession
@@ -165,7 +168,11 @@ class SuiteRunRunner {
         executionId: session.executionId,
         status: session.status,
         durationMs: session.summary?.durationMs ?? null,
+        failureClass: session.summary?.failureClass ?? null,
       })
+      // 归类随最后一次尝试更新；重试后通过则最终不保留失败归类（flaky 单独标记）
+      result.failureClass = session.summary?.failureClass ?? null
+      result.failureReason = session.summary?.failureReason ?? null
 
       if (session.status === 'passed') break
       if (this.stopped) break
@@ -224,6 +231,8 @@ class SuiteRunRunner {
       flaky: result.flaky,
       durationMs: result.durationMs,
       error: result.error,
+      failureClass: result.failureClass,
+      failureReason: result.failureReason,
       message,
     })
     this.emit('suite_progress', this.progress())

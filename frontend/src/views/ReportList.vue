@@ -1,21 +1,24 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../api'
+import { FAILURE_CLASSES, failureLabel, failureTag } from '../constants/failure'
 
 const router = useRouter()
 const list = ref<any[]>([])
 const loading = ref(false)
+const failureClass = ref('')
 
 async function load() {
   loading.value = true
   try {
-    list.value = await api.listExecutions()
+    list.value = await api.listExecutions({ failureClass: failureClass.value || undefined })
   } finally {
     loading.value = false
   }
 }
 
+watch(failureClass, load)
 onMounted(load)
 
 const fmt = (t?: number) => (t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '-')
@@ -35,7 +38,18 @@ const statusText: Record<string, string> = {
         <div class="page-title">执行报告</div>
         <div class="page-sub">每次流程执行的最终结果与输入输出匹对记录</div>
       </div>
-      <el-button @click="load">刷新</el-button>
+      <div class="header-actions">
+        <el-select
+          v-model="failureClass"
+          placeholder="全部失败归类"
+          clearable
+          size="default"
+          style="width: 150px"
+        >
+          <el-option v-for="c in FAILURE_CLASSES" :key="c" :label="failureLabel(c)" :value="c" />
+        </el-select>
+        <el-button @click="load">刷新</el-button>
+      </div>
     </div>
 
     <div class="panel">
@@ -51,6 +65,20 @@ const statusText: Record<string, string> = {
         <el-table-column label="结果" width="110">
           <template #default="{ row }">
             <el-tag size="small" :type="statusTag(row.status)">{{ statusText[row.status] || row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="失败归类" width="130">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="row.failureClass"
+              :content="row.failureReason || failureLabel(row.failureClass)"
+              placement="top"
+            >
+              <el-tag size="small" effect="plain" :type="failureTag(row.failureClass)">
+                {{ failureLabel(row.failureClass) }}
+              </el-tag>
+            </el-tooltip>
+            <span v-else class="muted">—</span>
           </template>
         </el-table-column>
         <el-table-column label="通过/未通过/跳过" width="140" align="center">
@@ -77,3 +105,11 @@ const statusText: Record<string, string> = {
     </div>
   </div>
 </template>
+
+<style scoped>
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+</style>

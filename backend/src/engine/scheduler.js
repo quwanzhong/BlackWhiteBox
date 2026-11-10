@@ -6,6 +6,7 @@ import { runChecks } from './validators.js'
 import { sessions } from './registry.js'
 import { evaluateCondition } from '../security/expression.js'
 import { maskDeep } from '../environments/service.js'
+import { classifyStep, classifyExecution } from '../reporting/classify.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -142,6 +143,9 @@ export class RunSession {
       envId: this.environment?.id || null,
       envVersion: this.environment?.version ?? null,
       suiteRunId: this.suiteRunId,
+      // M2-3：执行级失败归类投影列（写入时落库；老数据由读取端现算补齐）
+      failureClass: this.summary?.failureClass ?? null,
+      failureReason: this.summary?.failureReason ?? null,
       summary: this.summary,
     }
   }
@@ -172,6 +176,16 @@ export class RunSession {
   /** 步骤写库：创建与每次状态变化都调用，同一 seq 覆盖同一行（成本与历史长度无关） */
   saveStep(step) {
     if (!step.seq) step.seq = ++this.stepSeq
+    // M2-3：归类基于掩码后的步骤（error 里可能带 URL 参数），原因与证据口径一致
+    const classified = classifyStep(this.mask(step))
+    if (classified) {
+      step.failureClass = classified.failureClass
+      step.failureReason = this.mask(classified.failureReason)
+    } else {
+      // 状态回退（如人工确认由 failed 改判通过）时不保留旧归类
+      delete step.failureClass
+      delete step.failureReason
+    }
     store.saveExecutionStep(this.executionId, this.mask(step))
     return step
   }
@@ -257,7 +271,7 @@ export class RunSession {
     // 未执行到的节点统一标记为跳过
     for (const n of nodes) {
       if (!this.executed.has(n.id)) {
-        this.pushStep({
+        const step = this.pushStep({
           id: crypto.randomUUID(),
           nodeId: n.id,
           nodeName: n.name,
@@ -266,7 +280,13 @@ export class RunSession {
           finishedAt: null,
           durationMs: 0,
         })
-        this.emit('step_end', { nodeId: n.id, nodeName: n.name, status: 'skipped' })
+        this.emit('step_end', {
+          nodeId: n.id,
+          nodeName: n.name,
+          status: 'skipped',
+          failureClass: step.failureClass || null,
+          failureReason: step.failureReason || null,
+        })
       }
     }
   }
@@ -369,6 +389,13 @@ export class RunSession {
 
     step.finishedAt = Date.now()
     step.durationMs = step.finishedAt - (step.startedAt || step.finishedAt)
+    step.failureClass = null
+    step.failureReason = null
+    const classified = classifyStep(this.mask(step))
+    if (classified) {
+      step.failureClass = classified.failureClass
+      step.failureReason = this.mask(classified.failureReason)
+    }
 
     this.emit('step_end', {
       nodeId,
@@ -380,6 +407,9 @@ export class RunSession {
       request: step.request,
       error: step.error,
       extracted: step.extracted,
+      // M2-3：实时通道直接带归类，前端不必再拉详情
+      failureClass: step.failureClass,
+      failureReason: step.failureReason,
     })
     this.log(
       step.status === 'passed'
@@ -487,6 +517,11 @@ export class RunSession {
               ? '所有实际输出均符合流程理想输出'
               : '步骤执行通过，但存在输出不匹配项',
     }
+    // M2-3：执行级归类 = 失败步骤里第一条的类别 + 全量计数（供报告列表/详情/导出直接用）
+    const rollup = classifyExecution(steps, { status: this.status })
+    this.summary.failureClass = rollup.failureClass
+    this.summary.failureReason = this.mask(rollup.failureReason)
+    this.summary.failureClasses = rollup.counts
     this.saveContext() // 响应提取出的变量在结束时一并落库（与旧 JSON 行为一致）
     this.saveMeta()
     this.emit('flow_end', { status: this.status, summary: this.summary })

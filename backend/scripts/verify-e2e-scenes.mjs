@@ -10,6 +10,7 @@
  *   场景 6  统计面板：各计数与列表数据一致
  *   场景 7  环境与密钥：CRUD → 变量优先级 → baseUrl/Header → secrets 不落明文 → 错误码
  *   场景 8  套件与队列：CRUD → 并发上限 → 重试/flaky → failFast → 停止 → 删除语义
+ *   场景 9  失败归类：8 类规则逐条命中 → 列表筛选 → 归类原因脱敏 → 事件/套件口径一致
  *
  * 环境与 verify-m1-3 同口径：临时库 + 真实端口 + token；Apifox 侧只依赖本机缓存文件
  * （oas-cache.json，MCP 拉取的产物格式），不依赖外网。
@@ -767,6 +768,207 @@ check(
   `runs=${runsAfterDelete.length} execs=${execsAfterDelete.filter((e) => e.suiteRunId === suiteRun.suiteRunId).length}`
 )
 
+// ================================================================ 场景 9 · 失败归类（M2-3）
+const node9 = (id, url, expected, action = {}) => ({
+  id,
+  name: `节点 ${id}`,
+  action: { type: 'http', method: 'GET', url, ...action },
+  expected,
+})
+const makeClassFlow = async (name, nodes, edges = [], extra = {}) =>
+  (await post('/api/flows', { name, type: 'blackbox', projectId: project.id, nodes, edges, ...extra })).json()
+const run9 = async (flowId, body = {}) => (await post(`/api/flows/${flowId}/run`, body)).json()
+const stepOf = (detail, nodeId) => (detail.steps || []).find((s) => s.nodeId === nodeId)
+const stepEndOf = (detail, nodeId) =>
+  (detail.events || []).find((e) => e.type === 'step_end' && e.payload?.nodeId === nodeId)
+
+// 死端口：先真监听再关闭，保证 connect 一定被拒绝（network，而不是 DNS/超时）
+const deadServer = http.createServer()
+await new Promise((resolve) => deadServer.listen(0, '127.0.0.1', resolve))
+const deadBase = `http://127.0.0.1:${deadServer.address().port}`
+await new Promise((resolve) => deadServer.close(resolve))
+
+// —— 9.1 一次执行同时出现「状态码 / 断言 / 前置依赖」三类 ——
+const mixedFlow = await makeClassFlow(
+  '场景9 混合归类',
+  [
+    node9('c1', `${stubBase}/api/login`, { status: 500, checks: [] }),
+    node9('c2', `${stubBase}/api/orders`, { status: 200, checks: [] }),
+    node9('c3', `${stubBase}/api/orders`, { status: 200, checks: [{ path: '$.data.count', op: 'eq', value: 99 }] }),
+    node9('c4', `${stubBase}/api/orders`, { status: 200, checks: [] }),
+  ],
+  [{ from: 'c1', to: 'c2' }, { from: 'c3', to: 'c4' }]
+)
+const mixedDetail = await waitDone((await run9(mixedFlow.id)).executionId)
+check(
+  '9.1 混合失败：主归类取首个失败步骤，状态码/断言/依赖各自命中',
+  mixedDetail.status === 'failed' &&
+    mixedDetail.failureClass === 'status' &&
+    stepOf(mixedDetail, 'c1').failureClass === 'status' &&
+    stepOf(mixedDetail, 'c3').failureClass === 'assertion' &&
+    stepOf(mixedDetail, 'c2').failureClass === 'dependency' &&
+    stepOf(mixedDetail, 'c4').failureClass === 'dependency' &&
+    mixedDetail.summary.failureClasses.status === 1 &&
+    mixedDetail.summary.failureClasses.assertion === 1 &&
+    mixedDetail.summary.failureClasses.dependency === 2 &&
+    /期望 等于 500，实际 200/.test(stepOf(mixedDetail, 'c1').failureReason || ''),
+  `main=${mixedDetail.failureClass} counts=${JSON.stringify(mixedDetail.summary.failureClasses)}`
+)
+
+// —— 9.2~9.5 其余四类：网络 / 超时 / 结构 / 脚本 ——
+const netFlow = await makeClassFlow('场景9 网络不可达', [
+  node9('n1', `${deadBase}/api/login`, { status: 200, checks: [] }),
+])
+const netDetail = await waitDone((await run9(netFlow.id)).executionId)
+check(
+  '9.2 连接被拒绝 → network（原因带 ECONNREFUSED，不落在 script）',
+  netDetail.failureClass === 'network' &&
+    /ECONNREFUSED/.test(netDetail.failureReason || '') &&
+    netDetail.summary.failureClasses.timeout === 0,
+  `class=${netDetail.failureClass}`
+)
+
+const toFlow = await makeClassFlow('场景9 超时', [
+  node9('t1', `${stubBase}/api/login?ms=800`, { status: 200, checks: [] }, { timeout: 30 }),
+])
+const toDetail = await waitDone((await run9(toFlow.id)).executionId)
+check(
+  '9.3 节点 timeout 30ms 命中慢响应 → timeout（优先于网络判定）',
+  toDetail.failureClass === 'timeout' && /timeout of 30ms exceeded/.test(toDetail.failureReason || ''),
+  `class=${toDetail.failureClass} reason=${(toDetail.failureReason || '').slice(0, 40)}`
+)
+
+const schemaFlow = await makeClassFlow('场景9 结构不符', [
+  node9('s1', `${stubBase}/api/login`, {
+    status: 200,
+    checks: [{ type: 'schema', label: '登录返回结构', value: ['$.data.token', '$.data.role'] }],
+  }),
+])
+const schemaDetail = await waitDone((await run9(schemaFlow.id)).executionId)
+check(
+  '9.4 schema 断言缺字段 → schema，原因指出缺失路径',
+  schemaDetail.failureClass === 'schema' &&
+    /缺失 \$\.data\.role/.test(stepOf(schemaDetail, 's1').failureReason || '') &&
+    stepOf(schemaDetail, 's1').checks.results.some((c) => c.type === 'schema' && c.passed === false),
+  `class=${schemaDetail.failureClass} reason=${stepOf(schemaDetail, 's1').failureReason}`
+)
+
+const scriptFlow = await makeClassFlow('场景9 变量未解析', [
+  node9('g1', `${stubBase}/api/{{ghostPath}}`, { status: 200, checks: [] }),
+])
+const scriptDetail = await waitDone((await run9(scriptFlow.id)).executionId)
+check(
+  '9.5 变量未解析 → script 且请求根本不发（无 request 证据）',
+  scriptDetail.failureClass === 'script' &&
+    /变量未解析/.test(scriptDetail.failureReason || '') &&
+    !stepOf(scriptDetail, 'g1').request,
+  `class=${scriptDetail.failureClass}`
+)
+
+// —— 9.6 人工驳回 ——
+const rejectFlow = await makeClassFlow(
+  '场景9 人工驳回',
+  [{ id: 'm1', name: '走查金额计算', action: { type: 'manual', hint: '核对金额四舍五入' }, expected: { status: 200, checks: [] } }],
+  [],
+  { type: 'whitebox' }
+)
+const runReject = await run9(rejectFlow.id)
+await waitDetail(runReject.executionId, (d) => d.steps.some((s) => s.status === 'waiting' && s.nodeId === 'm1'))
+await post(`/api/executions/${runReject.executionId}/manual`, {
+  nodeId: 'm1',
+  pass: false,
+  note: '分位数处理错误，需修复',
+})
+const rejectDetail = await waitDone(runReject.executionId)
+check(
+  '9.6 人工确认不通过 → manual_reject，原因用测试人员备注',
+  rejectDetail.status === 'failed' &&
+    rejectDetail.failureClass === 'manual_reject' &&
+    /分位数处理错误/.test(rejectDetail.failureReason || ''),
+  `class=${rejectDetail.failureClass} reason=${rejectDetail.failureReason}`
+)
+
+// —— 9.7 列表按归类筛选（含非法值不过滤）——
+const allExecs = await (await get('/api/executions')).json()
+const netFiltered = await (await get('/api/executions?failureClass=network')).json()
+const schemaFiltered = await (await get('/api/executions?failureClass=schema')).json()
+const bogusFiltered = await (await get('/api/executions?failureClass=bogus')).json()
+check(
+  '9.7 GET /executions?failureClass= 精确过滤且行内带归类投影列',
+  netFiltered.length > 0 &&
+    netFiltered.every((e) => e.failureClass === 'network') &&
+    netFiltered.some((e) => e.id === netDetail.id) &&
+    schemaFiltered.some((e) => e.id === schemaDetail.id) &&
+    netFiltered.every((e) => !!e.failureReason),
+  `network=${netFiltered.length} schema=${schemaFiltered.length}`
+)
+check(
+  '9.8 非法归类值当作未过滤（返回全量，不报错）',
+  bogusFiltered.length === allExecs.length && allExecs.some((e) => e.failureClass === 'timeout'),
+  `all=${allExecs.length} bogus=${bogusFiltered.length}`
+)
+
+// —— 9.9 归类原因不得泄漏 secret 明文（归类基于掩码后的步骤）——
+const SECRET9 = 'scene9-secret-in-url-value'
+const env9 = await (
+  await post('/api/environments', {
+    name: '场景9 归类脱敏',
+    projectId: project.id,
+    baseUrl: stubBase,
+    secrets: { s9Secret: SECRET9 },
+  })
+).json()
+const leakFlow = await makeClassFlow('场景9 归类脱敏', [
+  node9('k1', `${deadBase}/api/login?s={{s9Secret}}`, { status: 200, checks: [] }),
+])
+const leakDetail = await waitDone((await run9(leakFlow.id, { environmentId: env9.id })).executionId)
+check(
+  '9.9 归类原因基于掩码后的步骤：URL 里的 secret 不落进 failureReason',
+  leakDetail.failureClass === 'network' &&
+    !JSON.stringify(leakDetail).includes(SECRET9) &&
+    /\*\*\*/.test(leakDetail.failureReason || ''),
+  `reason=${leakDetail.failureReason}`
+)
+
+// —— 9.10 事件 / 步骤 / 执行 / 列表 / 套件 五处口径一致 ——
+const clsSuite = await (
+  await post('/api/suites', {
+    name: '场景9 归类套件',
+    projectId: project.id,
+    flowIds: [schemaFlow.id, netFlow.id],
+    strategy: { concurrency: 2, retry: 0 },
+  })
+).json()
+const clsRun = await (await post(`/api/suites/${clsSuite.id}/run`, {})).json()
+const clsDone = await waitSuiteRun(clsRun.suiteRunId)
+const clsFlowByFlow = Object.fromEntries(clsDone.summary.flows.map((f) => [f.flowId, f]))
+const clsExecDetails = await Promise.all(
+  clsDone.executions.map(async (row) => ({
+    row,
+    detail: await (await get(`/api/executions/${row.id}`)).json(),
+  }))
+)
+check(
+  '9.10 事件、步骤、执行汇总、列表、套件 flows 的归类完全一致',
+  stepEndOf(mixedDetail, 'c1')?.payload?.failureClass === 'status' &&
+    stepEndOf(mixedDetail, 'c2')?.payload?.failureClass === 'dependency' &&
+    clsFlowByFlow[schemaFlow.id]?.failureClass === 'schema' &&
+    clsFlowByFlow[netFlow.id]?.failureClass === 'network' &&
+    clsFlowByFlow[schemaFlow.id]?.attemptExecutions?.[0]?.failureClass === 'schema' &&
+    clsDone.executions.length === 2 &&
+    clsExecDetails.every(
+      ({ row, detail }) =>
+        row.failureClass === detail.failureClass &&
+        detail.failureClass === clsFlowByFlow[detail.flowId]?.failureClass &&
+        detail.steps[0]?.failureClass === detail.failureClass &&
+        detail.summary?.failureClass === detail.failureClass &&
+        !!row.failureReason
+    ),
+  `suite=${clsDone.summary.flows.map((f) => f.failureClass).join(',')} execs=${clsExecDetails
+    .map(({ row }) => row.failureClass)
+    .join(',')}`
+)
+
 // ---------------------------------------------------------------- 汇总
 console.log('\n结论')
 console.log('-'.repeat(78))
@@ -776,7 +978,7 @@ for (const r of results) {
   console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  —  ${r.detail}` : ''}`)
 }
 console.log('-'.repeat(78))
-console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，8 个场景）`)
+console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，9 个场景）`)
 
 await new Promise((resolve) => appCtx.io.close(resolve))
 await new Promise((resolve) => appCtx.server.close(resolve))

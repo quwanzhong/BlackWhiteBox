@@ -1,13 +1,34 @@
 import { Router } from 'express'
 import { store } from '../store.js'
 import { sessions } from '../engine/registry.js'
+import { FAILURE_CLASSES, enrichExecutionDetail } from '../reporting/classify.js'
 
 const router = Router()
 
-// 执行记录列表
+/**
+ * 列表：支持 ?flowId= 与 ?failureClass=（M2-3）。
+ * 老执行记录没有归类投影列，先用详情里的 steps 现算一遍再筛选；
+ * 只对「需要按归类筛选」的请求做补齐，普通列表不做额外 IO。
+ */
 router.get('/', (req, res) => {
-  let list = store.listExecutions()
-  if (req.query.flowId) list = list.filter((e) => e.flowId === req.query.flowId)
+  const failureClass = req.query.failureClass ? String(req.query.failureClass) : ''
+  const flowId = req.query.flowId ? String(req.query.flowId) : ''
+
+  let list
+  if (failureClass && FAILURE_CLASSES.includes(failureClass)) {
+    list = store.listExecutions().map((row) => {
+      if (row.failureClass) return row
+      const detail = store.getExecutionDetail(row.id)
+      if (!detail) return row
+      enrichExecutionDetail(detail)
+      return { ...row, failureClass: detail.failureClass, failureReason: detail.failureReason }
+    })
+    list = list.filter((row) => row.failureClass === failureClass)
+  } else {
+    list = store.listExecutions()
+  }
+
+  if (flowId) list = list.filter((e) => e.flowId === flowId)
   res.json(list)
 })
 
@@ -15,7 +36,8 @@ router.get('/', (req, res) => {
 router.get('/:id', (req, res) => {
   const detail = store.getExecutionDetail(req.params.id)
   if (!detail) return res.status(404).json({ error: '执行记录不存在' })
-  res.json(detail)
+  // 老数据：步骤/执行级归类读取时现算补齐（幂等，不写库）
+  res.json(enrichExecutionDetail(detail))
 })
 
 // 暂停
