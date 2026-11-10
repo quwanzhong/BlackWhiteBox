@@ -15,6 +15,12 @@ import {
   summarize,
   updateProject,
 } from '../projects/service.js'
+import {
+  buildProjectGraph,
+  graphStatus,
+  listGaps,
+  queryChains,
+} from '../projects/codegraphService.js'
 
 const router = Router()
 
@@ -156,6 +162,46 @@ router.post('/:id/flows', (req, res) => {
 // 项目下的流程
 router.get('/:id/flows', (req, res) => {
   res.json(projectFlows(req.params.id))
+})
+
+// ---------------------------------------------------------------------------
+// 调用图 / W1 调用链（M3'-2）
+// ---------------------------------------------------------------------------
+
+// 构建（或重建）调用链图：静态分析整个前端工程，不执行代码
+router.post('/:id/codegraph', (req, res) => {
+  try {
+    res.json(buildProjectGraph(req.params.id, req.body || {}))
+  } catch (err) {
+    fail(res, err)
+  }
+})
+
+// 图状态：fresh / stale / missing —— 前端据此区分「无调用方」与「还没分析」
+router.get('/:id/codegraph', (req, res) => {
+  try {
+    res.json(graphStatus(req.params.id))
+  } catch (err) {
+    fail(res, err)
+  }
+})
+
+// 链路查询：?interfaceId= 按接口反查入口，?callId= 按调用点下钻
+router.get('/:id/codegraph/chains', (req, res) => {
+  try {
+    res.json(queryChains(req.params.id, req.query || {}))
+  } catch (err) {
+    fail(res, err)
+  }
+})
+
+// 断链与解析问题清单（人工关联入口）
+router.get('/:id/codegraph/gaps', (req, res) => {
+  try {
+    res.json(listGaps(req.params.id, req.query || {}))
+  } catch (err) {
+    fail(res, err)
+  }
 })
 
 export default router

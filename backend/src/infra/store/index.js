@@ -14,16 +14,18 @@ function foldersOf(interfaces) {
 }
 
 /** 与 projects/service.js 的 summarize() 保持同一份投影，供列表页直接使用 */
-function scanSummaryOf(scan) {
-  if (!scan) return null
+function scanSummaryOf(scan, codegraph = null) {
+  if (!scan && !codegraph) return null
   return {
-    scannedAt: scan.scannedAt,
-    scannedFiles: scan.scannedFiles,
-    callCount: scan.callCount,
-    matchedCalls: scan.matchedCalls,
-    matchRate: scan.matchRate,
-    matchedInterfaces: scan.matchedInterfaces,
-    groupCount: scan.groups?.length || 0,
+    scannedAt: scan?.scannedAt,
+    scannedFiles: scan?.scannedFiles,
+    callCount: scan?.callCount,
+    matchedCalls: scan?.matchedCalls,
+    matchRate: scan?.matchRate,
+    matchedInterfaces: scan?.matchedInterfaces,
+    groupCount: scan?.groups?.length || 0,
+    // 调用图摘要（M3'-2）：全量图在 data/codegraph/<id>.json，列表页只需要这几个小字段
+    codegraph: codegraph || null,
   }
 }
 
@@ -747,7 +749,10 @@ export function createStore(db) {
         sourceKind: project.source?.kind || 'apifox',
         interfaceCount: project.interfaceIds?.length || 0,
         foldersJson: JSON.stringify(foldersOf(interfaces)),
-        scanSummaryJson: project.scan ? JSON.stringify(scanSummaryOf(project.scan)) : null,
+        scanSummaryJson:
+          project.scan || project.codegraph
+            ? JSON.stringify(scanSummaryOf(project.scan, project.codegraph))
+            : null,
         dataJson: JSON.stringify(project),
         createdAt: project.createdAt ?? now,
         updatedAt: now,

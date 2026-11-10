@@ -28,7 +28,8 @@ function hash(...parts) {
   return crypto.createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 12)
 }
 
-function looksLikePath(raw) {
+/** 判断字符串是否像一个接口路径（相对/绝对/含占位符） */
+export function looksLikePath(raw) {
   if (!raw || raw.length > 500) return false
   if (/^(https?:)?\/\//i.test(raw)) return true
   if (!/^\s*(\/|\{\{|\$\{)/.test(raw)) return false
@@ -262,13 +263,11 @@ function walk(root, options, state) {
   }
 }
 
-/** 扫描目录，返回调用点（不包含接口匹配） */
-export function scanDirectory(root, options = {}) {
-  const resolved = path.resolve(String(root || ''))
-  const stat = fs.statSync(resolved)
-  if (!stat.isDirectory()) throw new Error(`代码目录不存在或不是文件夹：${resolved}`)
-
-  const opts = {
+/**
+ * 归一化扫描参数（目录遍历与调用点扫描共用，保证两者看到同一批文件）。
+ */
+function normalizeOptions(options = {}) {
+  return {
     extensions: DEFAULT_EXTENSIONS,
     maxFiles: 3000,
     maxFileSize: 2 * 1024 * 1024,
@@ -277,13 +276,32 @@ export function scanDirectory(root, options = {}) {
       e.startsWith('.') ? e.toLowerCase() : `.${e.toLowerCase()}`
     ),
   }
+}
+
+/**
+ * 列出目录下所有待分析源码文件（绝对路径，已排序）。
+ *
+ * M3'-2：codegraph 需要「页面/路由文件」这类没有调用点的文件也进图，
+ * 所以把遍历单独导出；scanDirectory 复用它，避免两套遍历规则漂移。
+ */
+export function listSourceFiles(root, options = {}) {
+  const resolved = path.resolve(String(root || ''))
+  const stat = fs.statSync(resolved)
+  if (!stat.isDirectory()) throw new Error(`代码目录不存在或不是文件夹：${resolved}`)
+
   const state = { files: [] }
-  walk(resolved, opts, state)
+  walk(resolved, normalizeOptions(options), state)
   state.files.sort()
+  return { root: resolved, files: state.files }
+}
+
+/** 扫描目录，返回调用点（不包含接口匹配） */
+export function scanDirectory(root, options = {}) {
+  const { root: resolved, files: sourceFiles } = listSourceFiles(root, options)
 
   const calls = []
   const files = []
-  for (const file of state.files) {
+  for (const file of sourceFiles) {
     let content
     try {
       content = fs.readFileSync(file, 'utf8')
@@ -299,7 +317,7 @@ export function scanDirectory(root, options = {}) {
   }
   calls.sort((a, b) => (a.file === b.file ? a.line - b.line : a.file.localeCompare(b.file)))
 
-  return { root: resolved, scannedFiles: state.files.length, files, calls }
+  return { root: resolved, scannedFiles: sourceFiles.length, files, calls }
 }
 
 /** 把调用点匹配到项目已绑定的接口 */

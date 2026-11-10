@@ -16,6 +16,7 @@
  *   场景 12 覆盖率取证：环境 settings.coverage → 每节点 reset/dump → 快照落库/投影/事件 →
  *          结束后 jacococli 分析（M3-2）→ agent/CLI/classfiles 缺失时降级且不伪装成 0%
  *   场景 13 接口来源抽象：来源清单/未知来源/OpenAPI 拉取与校验 → Apifox 行为零变化（SRC-1）
+ *   场景 14 W1 调用链还原：入口链路率/孤儿接口/断链降级 low/解析错误上报/重建提示（M3'-2）
  *          → project.source=openapi 绑定/可用/列表（M3'-1）
  *
  * 环境与 verify-m1-3 同口径：临时库 + 真实端口 + token；Apifox 侧只依赖本机缓存文件
@@ -1966,6 +1967,199 @@ check(
   `status=${badBind.status}`
 )
 
+// ================================================================ 场景 14 · W1 调用链还原
+// M3'-2：把「调用点顺序」升级为「接口 ← 函数 ← … ← 页面入口」的可追溯证据链。
+// 验收口径（AC-W1）：入口链路率可量化、孤儿接口单列、断链降级 low 并进人工清单、截断显式标注。
+
+const w1Root = path.join(DIR, 'w1-front')
+const w1Write = (rel, content) => {
+  const full = path.join(w1Root, rel)
+  fs.mkdirSync(path.dirname(full), { recursive: true })
+  fs.writeFileSync(full, content, 'utf8')
+}
+w1Write(
+  'src/router/index.js',
+  [
+    "import { createRouter, createWebHistory } from 'vue-router'",
+    'const routes = [',
+    "  { path: '/bill', name: 'Bill', component: () => import('@/views/bill/index.vue'), meta: { title: '账单管理' } },",
+    ']',
+    'export default createRouter({ history: createWebHistory(), routes })',
+    '',
+  ].join('\n')
+)
+w1Write(
+  'src/api/trsCheckBill.js',
+  [
+    "import request from '@/utils/request'",
+    '',
+    'export function getPageList(params) {',
+    "  return request({ url: '/trsCheckBill/page', method: 'post', data: params })",
+    '}',
+    '',
+    'export function removeBill(id) {',
+    '  return request.delete(`/trsCheckBill/${id}`)',
+    '}',
+    '',
+  ].join('\n')
+)
+// 没有任何页面引用：验证「无入口」不会被渲染成「无调用方」
+w1Write(
+  'src/api/account.js',
+  ["import request from '@/utils/request'", '', 'export function login(form) {', "  return request({ url: '/system/login', method: 'post', data: form })", '}', ''].join('\n')
+)
+w1Write('src/utils/request.js', "import axios from 'axios'\nconst service = axios.create({ baseURL: '/prod-api' })\nexport default service\n")
+w1Write(
+  'src/components/PayerDialog.vue',
+  [
+    '<template>',
+    '  <el-dialog v-model="visible" @close="reset">',
+    '    <el-button @click="submit">确定</el-button>',
+    '  </el-dialog>',
+    '</template>',
+    '<script setup>',
+    "import { ref } from 'vue'",
+    "import { removeBill } from '@/api/trsCheckBill'",
+    'const visible = ref(false)',
+    'function reset() {',
+    '  visible.value = false',
+    '}',
+    'async function submit() {',
+    '  await removeBill(1)',
+    '}',
+    '</script>',
+    '',
+  ].join('\n')
+)
+w1Write(
+  'src/views/bill/index.vue',
+  [
+    '<template>',
+    '  <div class="app-container">',
+    '    <el-button @click="loadList">查询</el-button>',
+    '    <payer-dialog ref="dlg" />',
+    '  </div>',
+    '</template>',
+    '<script setup>',
+    "import { ref } from 'vue'",
+    "import { getPageList } from '@/api/trsCheckBill'",
+    "import PayerDialog from '@/components/PayerDialog.vue'",
+    'const list = ref([])',
+    'async function loadList() {',
+    "  const res = await getPageList({ billCode: '', pageNum: 1 })",
+    '  list.value = res.data.rows',
+    '}',
+    '</script>',
+    '',
+  ].join('\n')
+)
+// 解析失败的文件：必须进 gaps 清单，不能静默跳过
+w1Write('src/views/bill/broken.vue', '<template><div/></template>\n<script setup>\nconst x = (\n</script>\n')
+
+const w1Spec = {
+  openapi: '3.0.0',
+  info: { title: '场景14 W1 文档', version: '1.0.0' },
+  servers: [{ url: stubBase }],
+  paths: {
+    '/trsCheckBill/page': { post: { summary: '账单分页', 'x-apifox-folder': '账单' } },
+    '/trsCheckBill/{id}': { delete: { summary: '账单删除', 'x-apifox-folder': '账单' } },
+    '/system/login': { post: { summary: '登录', 'x-apifox-folder': '系统' } },
+    '/never/called': { get: { summary: '孤儿接口', 'x-apifox-folder': '系统' } },
+  },
+}
+const w1Project = await (
+  await post('/api/projects', {
+    name: '场景14 调用链项目',
+    codePath: w1Root,
+    source: { kind: 'openapi', config: { spec: w1Spec } },
+  })
+).json()
+const w1Bound = await (
+  await put(`/api/projects/${w1Project.id}/interfaces`, {
+    ids: ['POST /trsCheckBill/page', 'DELETE /trsCheckBill/{id}', 'POST /system/login', 'GET /never/called'],
+  })
+).json()
+await post(`/api/projects/${w1Project.id}/scan`, { codePath: w1Root })
+
+const w1Before = await (await get(`/api/projects/${w1Project.id}/codegraph`)).json()
+check(
+  '14.1 扫描后未构建：state=stale / reason=not-built（不显示成「0 条链路」）',
+  w1Before.state === 'stale' && w1Before.reason === 'not-built' && w1Before.summary === null,
+  `${w1Before.state}/${w1Before.reason}`
+)
+
+const w1Built = await (await post(`/api/projects/${w1Project.id}/codegraph`, {})).json()
+check(
+  '14.2 构建调用链图：未绑定接口数/入口链路率可量化、无静默截断、组件边生效',
+  w1Bound.interfaces?.length === 4 &&
+    w1Built.stats?.endpointCount === 3 &&
+    w1Built.stats?.endpointChainRate === 67 &&
+    w1Built.stats?.orphanInterfaceCount === 1 &&
+    w1Built.stats?.lowConfidenceChainCount >= 1 &&
+    w1Built.stats?.componentEdgeCount >= 1 &&
+    w1Built.truncated === false &&
+    w1Built.bytes > 0,
+  `endpoints=${w1Built.stats?.endpointCount} rate=${w1Built.stats?.endpointChainRate}% orphan=${w1Built.stats?.orphanInterfaceCount} bytes=${w1Built.bytes}`
+)
+
+const w1Detail = await (await get(`/api/projects/${w1Project.id}`)).json()
+check(
+  '14.3 摘要落项目文档、全量图在旁路文件（nodes/edges 不进库）',
+  w1Detail.codegraph?.signature === w1Built.signature &&
+    w1Detail.codegraph?.nodes === undefined &&
+    w1Detail.codegraph?.stats?.functionCount > 0,
+  `signature=${w1Detail.codegraph?.signature}`
+)
+
+const delChains = await (
+  await get(`/api/projects/${w1Project.id}/codegraph/chains?interfaceId=${encodeURIComponent('DELETE /trsCheckBill/{id}')}`)
+).json()
+check(
+  '14.4 按接口反查：弹窗组件里的删除调用经组件边回溯到 /bill 入口（high/medium，非断链）',
+  delChains.chains?.[0]?.entry?.route === '/bill' &&
+    delChains.chains[0].confidence !== 'low' &&
+    delChains.chains[0].hops >= 2 &&
+    delChains.files?.some((f) => f.file === 'src/components/PayerDialog.vue'),
+  `route=${delChains.chains?.[0]?.entry?.route} hops=${delChains.chains?.[0]?.hops} files=${delChains.files?.length}`
+)
+
+const loginChains = await (
+  await get(`/api/projects/${w1Project.id}/codegraph/chains?interfaceId=${encodeURIComponent('POST /system/login')}`)
+).json()
+check(
+  '14.5 断链诚实：无入口链路标 reason=no-entry + confidence=low，不当成「有调用方」',
+  loginChains.chains?.[0]?.reason === 'no-entry' &&
+    loginChains.chains[0].confidence === 'low' &&
+    loginChains.chains[0].entry === null,
+  `reason=${loginChains.chains?.[0]?.reason} conf=${loginChains.chains?.[0]?.confidence}`
+)
+
+const allChains = await (await get(`/api/projects/${w1Project.id}/codegraph/chains`)).json()
+check(
+  '14.6 孤儿接口单列：文档里有、代码里没人调（不混进「无调用方」）',
+  allChains.orphanInterfaces?.some((o) => o.interfaceId === 'GET /never/called') && allChains.endpoints?.length === 3,
+  `orphan=${allChains.orphanInterfaces?.map((o) => o.interfaceId).join(',')}`
+)
+
+const w1Gaps = await (await get(`/api/projects/${w1Project.id}/codegraph/gaps`)).json()
+check(
+  '14.7 断链与解析问题清单：broken.vue 解析失败上报、未解析调用可人工关联',
+  w1Gaps.state === 'fresh' &&
+    w1Gaps.parseErrors?.some((e) => String(e.file).includes('broken.vue')) &&
+    w1Gaps.noEntryCalls?.some((c) => c.interfaceId === 'POST /system/login') &&
+    Array.isArray(w1Gaps.unresolved) &&
+    w1Gaps.truncated === false,
+  `parseErrors=${w1Gaps.parseErrors?.length} noEntry=${w1Gaps.noEntryCalls?.length} unresolved=${w1Gaps.unresolved?.length}`
+)
+
+await post(`/api/projects/${w1Project.id}/scan`, { codePath: w1Root })
+const w1Stale = await (await get(`/api/projects/${w1Project.id}/codegraph`)).json()
+check(
+  '14.8 重新扫描后摘要过期：state=stale / reason=scan-changed（提示重建，而不是继续用旧图）',
+  w1Stale.state === 'stale' && w1Stale.reason === 'scan-changed' && w1Stale.summary !== null,
+  `${w1Stale.state}/${w1Stale.reason}`
+)
+
 // ---------------------------------------------------------------- 汇总
 console.log('\n结论')
 console.log('-'.repeat(78))
@@ -1975,7 +2169,7 @@ for (const r of results) {
   console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  —  ${r.detail}` : ''}`)
 }
 console.log('-'.repeat(78))
-console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，13 个场景）`)
+console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，14 个场景）`)
 
 await new Promise((resolve) => appCtx.io.close(resolve))
 await new Promise((resolve) => appCtx.server.close(resolve))

@@ -12,6 +12,7 @@ import { store } from '../store.js'
 import { normalizeSourceConfig } from '../sources/contract.js'
 import { createSource } from '../sources/registry.js'
 import { analyzeProject, buildGroups } from './scanner.js'
+import { removeGraph } from '../codegraph/store.js'
 
 function clean(value) {
   return String(value ?? '').trim()
@@ -60,6 +61,7 @@ function emptyProject(input = {}) {
     interfaceIds: [],
     interfaces: [],
     scan: null,
+    codegraph: null,
   }
 }
 
@@ -109,6 +111,7 @@ export function summarize(project) {
           groupCount: scan.groups?.length || 0,
         }
       : null,
+    codegraph: project.codegraph || null,
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
   }
@@ -136,6 +139,8 @@ export function updateProject(id, input) {
 
 export function deleteProject(id) {
   store.deleteProject(id)
+  // 旁路缓存随项目一起消失：换了 id 就是另一个工程，残留的图会给出错误的调用链
+  removeGraph(id)
 }
 
 // ---------------------------------------------------------------------------
