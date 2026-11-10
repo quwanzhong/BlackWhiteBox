@@ -128,7 +128,7 @@ export function listGaps(id, input = {}) {
   const status = graphStatus(id)
   const graph = graphOrNull(id)
   if (!graph) {
-    return { state: status.state, reason: status.reason, noEntryCalls: [], unresolved: [], parseErrors: [] }
+    return { state: status.state, reason: status.reason, noEntryCalls: [], unresolved: [], unresolvedImports: [], parseErrors: [] }
   }
   const limit = Math.max(1, Math.min(Number(input.limit) || 200, 2000))
   return {
@@ -137,6 +137,7 @@ export function listGaps(id, input = {}) {
     truncatedReasons: graph.truncatedReasons || [],
     noEntryCalls: (graph.noEntryCalls || []).slice(0, limit),
     unresolved: (graph.unresolved || []).slice(0, limit),
+    unresolvedImports: (graph.unresolvedImports || []).slice(0, limit),
     parseErrors: (graph.parseErrors || []).slice(0, limit),
     skippedFiles: (graph.skippedFiles || []).slice(0, limit),
   }

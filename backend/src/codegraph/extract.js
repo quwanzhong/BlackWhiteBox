@@ -59,7 +59,12 @@ function literalValue(node) {
   if (!node) return null
   if (node.type === 'StringLiteral') return node.value
   if (node.type === 'TemplateLiteral') {
-    return node.quasis.map((q) => q.value?.cooked ?? '').join('{}')
+    // `${BASE_URL}/trs/x` 这类模板串：整体是 '{}'+'/trs/x'，不是合法路径，
+    // 但后半段字面量就是真实接口路径（scanner 也是这么取的）。
+    const parts = node.quasis.map((q) => q.value?.cooked ?? '')
+    const joined = parts.join('{}')
+    const hit = [joined, ...parts].find((v) => looksLikePath(v))
+    return hit !== undefined ? hit : joined
   }
   return null
 }
@@ -189,10 +194,16 @@ export function extractUnit(unit, relFile, lines, options = {}) {
       id,
       file: relFile,
       line,
+      endLine: (node.loc?.end.line || node.loc?.start.line || 1) + lineOffset,
       name,
       params: paramNames(node.params),
       async: Boolean(node.async),
       module: false,
+      // 直接声明在模块作用域（含 `<script setup>` 顶层）：入口模块可达它，无需调用边证明
+      topLevel: fnStack.length === 0,
+      // 词法父函数：回调（`ids.forEach((id) => ...)`）没有任何调用边，
+      // 只能靠「声明在谁里面」证明可达，否则链路断在匿名函数上。
+      parentFnId: fnStack.length ? fnStack[fnStack.length - 1].id : moduleFn.id,
       exported: false,
     }
     functions.push(fn)

@@ -59,12 +59,27 @@ export function decorateChain(graph, chain, indexes = null) {
   }
 }
 
+const CONF_RANK = { high: 3, medium: 2, low: 1 }
+
+/** 链路排序：有入口优先 → 置信度高优先 → 跳数少优先（UI 与断言都看第一条） */
+function bestFirst(a, b) {
+  return (
+    Number(Boolean(b.entry)) - Number(Boolean(a.entry)) ||
+    (CONF_RANK[b.confidence] || 0) - (CONF_RANK[a.confidence] || 0) ||
+    (a.hops || 0) - (b.hops || 0)
+  )
+}
+
 /** 按接口取链路（W1-3：从接口反查所有触发它的页面/组件） */
 export function chainsForEndpoint(graph, interfaceId, options = {}) {
   const limit = Math.max(1, Math.min(Number(options.limit) || 20, 100))
   if (!graph?.chains?.length) return []
   const idx = indexNodes(graph)
-  return graph.chains.filter((c) => c.interfaceId === interfaceId).slice(0, limit).map((c) => decorateChain(graph, c, idx))
+  return graph.chains
+    .filter((c) => c.interfaceId === interfaceId)
+    .sort(bestFirst)
+    .slice(0, limit)
+    .map((c) => decorateChain(graph, c, idx))
 }
 
 /** 按调用点取链路（画布节点/调用点列表下钻） */
@@ -72,7 +87,11 @@ export function chainsForCallSite(graph, callId, options = {}) {
   const limit = Math.max(1, Math.min(Number(options.limit) || 20, 100))
   if (!graph?.chains?.length) return []
   const idx = indexNodes(graph)
-  return graph.chains.filter((c) => c.callSiteId === callId).slice(0, limit).map((c) => decorateChain(graph, c, idx))
+  return graph.chains
+    .filter((c) => c.callSiteId === callId)
+    .sort(bestFirst)
+    .slice(0, limit)
+    .map((c) => decorateChain(graph, c, idx))
 }
 
 /** 某个函数的调用方（W3/功能分析用；带文件行号，可跳转） */

@@ -11,10 +11,10 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { listSourceFiles } from '../projects/scanner.js'
+import { listSourceFiles, matchScore } from '../projects/scanner.js'
 import { extractUnit } from './extract.js'
 import { parseFile } from './parse.js'
-import { createResolver } from './resolve.js'
+import { createResolver, isInProjectSpecifier } from './resolve.js'
 import { nameOf, walk } from './walker.js'
 
 const DEFAULTS = {
@@ -57,7 +57,12 @@ export function weakest(a, b) {
 export function classifyFile(relFile) {
   const p = String(relFile).toLowerCase()
   if (/(^|\/)(router|routes)\//.test(p)) return 'router'
-  if (/(^|\/)(views|pages)\//.test(p)) return 'page'
+  if (/(^|\/)(views|pages)\//.test(p)) {
+    // views 下面的 dialog / components 子目录是「页面用到的组件」，不是入口页面；
+    // 否则每个弹窗都会变成入口，接口链路会错误地「回溯到自己」。
+    if (/(^|\/)(dialog|dialogs|components|modals?|popups?)\//.test(p)) return 'component'
+    return 'page'
+  }
   if (/(^|\/)(api|apis|service|services)\//.test(p)) return 'api'
   if (/(^|\/)(store|stores|pinia)\//.test(p)) return 'store'
   if (p.endsWith('.vue')) return 'component'
@@ -215,6 +220,9 @@ export function buildCodeGraph(root, input = {}) {
   const bindingMap = new Map()
   const importEdges = []
   const exportMaps = new Map()
+  // 本该指向工程内、却没解析到的 import（`@/api/x`、`./y`）。
+  // 裸包名（vue / axios）属于 node_modules，不算断链，否则噪音会淹没真问题。
+  const unresolvedImports = []
 
   for (const rec of records) {
     for (const fn of rec.functions) {
@@ -239,7 +247,12 @@ export function buildCodeGraph(root, input = {}) {
 
     for (const imp of rec.imports) {
       const targetFile = resolve(rec.file, imp.source)
-      if (!targetFile) continue
+      if (!targetFile) {
+        if (isInProjectSpecifier(imp.source) && unresolvedImports.length < options.maxUnresolved) {
+          unresolvedImports.push({ file: rec.file, line: imp.line, source: imp.source, local: imp.local, reason: 'import-unresolved' })
+        }
+        continue
+      }
       bindingMap.set(`${rec.file}|${imp.local}`, { targetFile, imported: imp.imported, kind: imp.kind })
       importEdges.push({
         type: 'imports',
@@ -385,17 +398,36 @@ export function buildCodeGraph(root, input = {}) {
     if (routedFiles.has(rec.file)) continue
     const fnId = entryFnOfFile(rec.file)
     if (!fnId) continue
+    // 路由表拿不到时的兜底入口：`views/bill/index.vue` 用目录名当入口名，
+    // 否则一屏全是 `index`，人工核对时分不清是哪个页面。
+    const base = path.posix.basename(rec.file).replace(/\.\w+$/, '')
+    const parent = path.posix.basename(path.posix.dirname(rec.file))
     entries.push({
       route: '',
       file: rec.file,
       fnId,
-      name: path.posix.basename(rec.file).replace(/\.\w+$/, ''),
+      name: /^index$/i.test(base) && parent ? parent : base,
       line: 1,
       via: 'views-fallback',
     })
   }
+
+  // App.vue 是被 main.js 挂载的根组件：它是真正的入口，不该因为没有路由表就被当成孤儿。
+  for (const rec of records) {
+    if (!/(^|\/)App\.vue$/i.test(rec.file)) continue
+    const fnId = entryFnOfFile(rec.file)
+    if (!fnId) continue
+    entries.push({ route: '', file: rec.file, fnId, name: 'App', line: 1, via: 'app-root' })
+  }
   const entryByFn = new Map()
-  for (const entry of entries) if (entry.fnId) entryByFn.set(entry.fnId, entry)
+  for (const entry of entries) {
+    if (entry.fnId) entryByFn.set(entry.fnId, entry)
+    // 进入页面 = 该文件模块作用域先执行。`export default defineComponent({...})` 的页面，
+    // 入口 fn 是合成 `<default>`，而回溯常常落在 `<module>` 上——两者必须等价，
+    // 否则链路明明走到了页面，却被判成 no-entry（输研 1.0 实测 35 条如此）。
+    const moduleId = recordOf(entry.file)?.moduleFn?.id
+    if (moduleId) entryByFn.set(moduleId, entry)
+  }
 
   // ------------------------------------------------- 组件使用边（父页面 → 子组件）
   // 模板里的 `<PayerDialog />` 不带任何调用语法，但它是 W1 链路唯一的「组件宿主」证据；
@@ -417,9 +449,22 @@ export function buildCodeGraph(root, input = {}) {
         if (!binding?.targetFile) continue
         const to = entryFnOfFile(binding.targetFile)
         if (!to) continue
-        pushEdge(from, to, 'medium', 'component', tag.line, 'component')
+        pushEdge(from, to, 'medium', tag.via === 'prop' ? 'component-prop' : 'component', tag.line, 'component')
         break
       }
+    }
+  }
+
+  // ------------------------------------------------- 作用域边（父作用域 → 声明的函数）
+  // `<script setup>` 的顶层函数由模板事件 / 生命周期使用，回调函数由调用方执行，
+  // 源码里都没有对应调用语法。缺这类边，`loadList()` / `ids.forEach(() => api())`
+  // 回溯到页面入口就断在 no-entry：输研 1.0 实测 161 个调用点全部命中。
+  // 这是「可达性」证据而不是调用点，因此单独记为 scope 边（不进 callersOf 的调用方列表）。
+  for (const rec of records) {
+    for (const fn of rec.functions) {
+      const from = fn.parentFnId || rec.moduleFn?.id
+      if (!from || from === fn.id) continue
+      pushEdge(from, fn.id, 'medium', fn.topLevel ? 'module-scope' : 'closure', fn.line, 'scope')
     }
   }
 
@@ -432,14 +477,23 @@ export function buildCodeGraph(root, input = {}) {
 
   const triggerByCallId = new Map()
   const triggerEdges = []
+  // `/{}//bill/save` 这类是「域名/前缀占位符」被模板串打出来的痕迹，
+  // 与 `/bill/save` 指的是同一个接口；比较前先去掉起始占位段。
+  const trimPlaceholderPrefix = (p) => String(p || '').replace(/^(?:\/\{\})+/, '')
   for (const call of scannerCalls) {
     if (!call?.id) continue
     const list = astCallsByFile.get(call.file) || []
     let best = null
     for (const c of list) {
-      if (call.path && c.path !== call.path) continue
+      // 同一行/相邻行 + 路径相同是最强证据；模板串前缀差异（`${BASE}/x` vs `/x`）
+      // 用 scanner 的路径相似度兜底，避免「调用点明明在，却因为前缀不同断链」。
+      const left = trimPlaceholderPrefix(call.path)
+      const right = trimPlaceholderPrefix(c.path)
+      const exact = Boolean(left) && left === right
+      const score = exact ? 100 : left && right ? matchScore(left, right) : 0
       const diff = Math.abs((c.line || 0) - (call.line || 0))
-      if (!best || diff < best.diff) best = { c, diff }
+      if (!exact && !(score >= 70 && diff <= 3)) continue
+      if (!best || diff < best.diff || (diff === best.diff && score > best.score)) best = { c, diff, score }
     }
     const rec = recordOf(call.file)
     const fnId = best?.c?.fnId || rec?.moduleFn?.id || ''
@@ -576,6 +630,11 @@ export function buildCodeGraph(root, input = {}) {
 
   const noEntryCalls = []
   let callsWithEntry = 0
+  const callerCountOf = (call) => {
+    const trigger = triggerByCallId.get(call.id)
+    if (!trigger) return 0
+    return (callers.get(trigger.fnId) || []).filter((e) => e.via !== 'module-scope' && e.via !== 'closure').length
+  }
   for (const call of scannerCalls) {
     if (!call.matchedInterfaceId) continue
     const list = endpointChains.get(call.matchedInterfaceId) || []
@@ -592,8 +651,20 @@ export function buildCodeGraph(root, input = {}) {
       interfaceId: call.matchedInterfaceId,
       confidence: trigger?.confidence || 'low',
       reason: trigger ? 'no-entry' : 'not-in-ast',
+      callerCount: callerCountOf(call),
     })
   }
+
+  // 「有调用方的调用点」= 触发函数在工程内确实被调用/本身是入口，或它自己就是页面入口。
+  // 分母换成它才能回答「能证明的链路有多准」；无调用方的点属于孤儿/死代码，
+  // 单独计数，绝不摊薄进成功率（也不伪装成失败）。
+  const callSitesWithCaller = scannerCalls.filter((call) => {
+    if (!call.matchedInterfaceId) return false
+    const trigger = triggerByCallId.get(call.id)
+    if (!trigger) return false
+    if (entryByFn.has(trigger.fnId)) return true
+    return callerCountOf(call) > 0
+  }).length
 
   const endpointsWithEntry = endpoints.filter((e) => e.hasEntry).length
   const stats = {
@@ -602,6 +673,8 @@ export function buildCodeGraph(root, input = {}) {
     fileCount: fileNodes.length,
     functionCount: fnNodes.length,
     callEdgeCount: callEdges.filter((e) => e.type === 'calls').length,
+    scopeEdgeCount: callEdges.filter((e) => e.type === 'scope' && e.via === 'module-scope').length,
+    closureEdgeCount: callEdges.filter((e) => e.type === 'scope' && e.via === 'closure').length,
     componentEdgeCount: callEdges.filter((e) => e.type === 'component').length,
     callSiteCount: scannerCalls.length,
     callSitesTotal,
@@ -609,6 +682,10 @@ export function buildCodeGraph(root, input = {}) {
     callsWithEntry,
     callsWithoutEntry: noEntryCalls.length,
     callChainRate: scannerCalls.length ? Math.round((callsWithEntry / scannerCalls.length) * 100) : 0,
+    callSitesWithCaller,
+    callChainRateAmongCallable: callSitesWithCaller
+      ? Math.round((callsWithEntry / callSitesWithCaller) * 100)
+      : 0,
     endpointCount: endpoints.length,
     endpointsWithEntry,
     endpointChainRate: endpoints.length ? Math.round((endpointsWithEntry / endpoints.length) * 100) : 0,
@@ -616,6 +693,7 @@ export function buildCodeGraph(root, input = {}) {
     interfacesWithoutEntryCount: interfacesWithoutEntry.length,
     lowConfidenceChainCount: chains.filter((c) => c.confidence === 'low').length,
     unresolvedCount: unresolved.length,
+    unresolvedImportCount: unresolvedImports.length,
     parseErrorCount: parseErrors.length,
   }
 
@@ -652,6 +730,7 @@ export function buildCodeGraph(root, input = {}) {
     edges: {
       imports: importEdges.slice(0, options.maxNodes),
       calls: callEdges.filter((e) => e.type === 'calls'),
+      scopes: callEdges.filter((e) => e.type === 'scope'),
       components: callEdges.filter((e) => e.type === 'component'),
       triggers: triggerEdges,
     },
@@ -662,6 +741,7 @@ export function buildCodeGraph(root, input = {}) {
     interfacesWithoutEntry,
     noEntryCalls: noEntryCalls.slice(0, options.maxUnresolved),
     unresolved,
+    unresolvedImports,
     stats,
     options: {
       maxFiles: options.maxFiles,

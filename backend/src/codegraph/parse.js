@@ -80,7 +80,7 @@ export function extractTemplateComponents(source) {
     const name = m[1]
     if (seen.has(name)) continue
     seen.add(name)
-    out.push({ name, line: source.slice(0, bodyStart + m.index).split('\n').length })
+    out.push({ name, line: source.slice(0, bodyStart + m.index).split('\n').length, via: 'tag' })
   }
   return out
 }
@@ -115,6 +115,32 @@ export function extractTemplateBindings(source) {
         line: source.slice(0, bodyStart + m.index).split('\n').length,
         snippet: m[0].slice(0, 160),
       })
+    }
+  }
+  return out
+}
+
+/**
+ * 提取 `template` 里「以属性形式传入的组件」：`:assay-component="AssayTabs"`。
+ *
+ * 输研 1.0 的弹窗把子组件当 prop 传给通用弹窗（`<AssayStartDialog :assay-component="AssayTabs" />`），
+ * 标签里看不到 `<AssayTabs>`，但它确实会被渲染——漏掉就断链。
+ * 只认大写开头的标识符，避免把 `:config="dialogConfig"` 这类普通数据当成组件。
+ */
+export function extractTemplateComponentRefs(source) {
+  const templateMatch = source.match(/<template\b[^>]*>([\s\S]*)<\/template>/i)
+  if (!templateMatch) return []
+  const body = templateMatch[1]
+  const bodyStart = templateMatch.index + templateMatch[0].indexOf('>') + 1
+  const out = []
+  const seen = new Set()
+  const re = /(?:v-bind:|(?<![\w:]):)[A-Za-z][\w-]*\s*=\s*"([^"]*)"/g
+  let m
+  while ((m = re.exec(body))) {
+    for (const token of (m[1] || '').match(/\b[A-Z][A-Za-z0-9_$]*\b/g) || []) {
+      if (seen.has(token)) continue
+      seen.add(token)
+      out.push({ name: token, via: 'prop', line: source.slice(0, bodyStart + m.index).split('\n').length })
     }
   }
   return out
@@ -158,7 +184,7 @@ export function parseFile(relFile, source, absolutePath) {
         units: [],
         errors,
         template: extractTemplateBindings(source),
-        components: extractTemplateComponents(source),
+        components: [...extractTemplateComponents(source), ...extractTemplateComponentRefs(source)],
       }
     }
     for (const block of blocks) {
@@ -172,7 +198,7 @@ export function parseFile(relFile, source, absolutePath) {
       units,
       errors,
       template: extractTemplateBindings(source),
-      components: extractTemplateComponents(source),
+      components: [...extractTemplateComponents(source), ...extractTemplateComponentRefs(source)],
     }
   }
 

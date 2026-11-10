@@ -9,7 +9,7 @@ import { extractUnit } from '../src/codegraph/extract.js'
 import { nameOf, paramNames } from '../src/codegraph/walker.js'
 import { createResolver } from '../src/codegraph/resolve.js'
 import { loadGraph, removeGraph, saveGraph } from '../src/codegraph/store.js'
-import { graphSignature } from '../src/codegraph/index.js'
+import { chainsForEndpoint, graphSignature } from '../src/codegraph/index.js'
 import { matchCalls, scanDirectory } from '../src/projects/scanner.js'
 
 /** 建一个临时前端工程：router → page → api + 用 `<payer-dialog>` 的弹窗组件 */
@@ -231,8 +231,10 @@ test('codegraph: 组件边后的接口调用回溯到入口；无调用接口进
   assert.ok(delInterface)
   assert.equal(delInterface.hasEntry, true, '组件边让删除链路回到 /bill 入口')
 
-  const delChain = graph.chains.find((c) => c.interfaceId === delInterface.interfaceId)
-  assert.ok(delChain)
+  const delChains = graph.chains.filter((c) => c.interfaceId === delInterface.interfaceId)
+  assert.ok(delChains.length)
+  const delChain = delChains.find((c) => c.entry)
+  assert.ok(delChain, '至少一条链路能回溯到入口')
   assert.equal(delChain.reason, 'entry')
   assert.equal(delChain.confidence, 'medium')
   assert.ok(delChain.hops >= 2, 'delete → dialog submit → page module，至少两跳')
@@ -314,4 +316,145 @@ test('codegraph: resolver 支持相对路径 / @ alias / 省略扩展名 / index
   assert.equal(resolver('src/api/trsCheckBill.js', '@/api'), 'src/api/index.js')
   assert.equal(resolver('src/components/PayerDialog.vue', '@/components/PayerDialog.vue'), 'src/components/PayerDialog.vue')
   assert.equal(resolver('src/api/order.js', 'vue-router'), null, 'node_modules 模块不进图')
+})
+
+test('codegraph: resolver 兼容「工程根就是源码根」与「以自己包名作别名」（输研 1.0 实测写法）', () => {
+  const flat = createResolver('/project', new Set(['api/bill.js', 'views/bill/index.vue', 'components/PayerDialog.vue']))
+  assert.equal(flat('views/bill/index.vue', '@/api/bill.js'), 'api/bill.js', '没有 src/ 时 @/ 回落到工程根')
+  assert.equal(flat('views/bill/index.vue', '@/components/PayerDialog.vue'), 'components/PayerDialog.vue')
+  assert.equal(flat('views/bill/index.vue', '@transfusion-research-web/api/bill.js'), 'api/bill.js', '自引用包名按「路径真实存在」解析')
+  assert.equal(flat('views/bill/index.vue', '@commonlib/utils/tableHoverMixin.js'), null, '外部包不误判为工程内文件')
+  assert.equal(flat('views/bill/index.vue', '@element-plus/icons-vue'), null)
+})
+
+// ---------------------------------------------------------------- 真实工程写法回归
+
+/** 复刻输研 1.0 的三种坑：无 src/、自引用包名、回调 + 模板串前缀 */
+function makeFlatFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'heibaihe-cg-flat-'))
+  const write = (rel, content) => {
+    const full = path.join(root, rel)
+    fs.mkdirSync(path.dirname(full), { recursive: true })
+    fs.writeFileSync(full, content, 'utf8')
+  }
+  write('api/bill.js', [
+    "import request from '@/utils/request'",
+    '',
+    'const BASE_URL = CONSTANT.BSMART',
+    '',
+    'export function saveBill(data) {',
+    '  return request({',
+    '    url: `${BASE_URL}/bill/save`,',
+    "    method: 'post',",
+    '    data,',
+    '  })',
+    '}',
+    '',
+    'export function removeBill(id) {',
+    '  return request.delete(`/bill/${id}`)',
+    '}',
+    '',
+  ].join('\n'))
+  write('utils/request.js', "import axios from 'axios'\nconst service = axios.create({ baseURL: '/prod-api' })\nexport default service\n")
+  write('components/PayerDialog.vue', [
+    '<template>',
+    '  <el-dialog v-model="visible">',
+    '    <el-button @click="submit">确定</el-button>',
+    '  </el-dialog>',
+    '</template>',
+    '<script setup>',
+    "import { ref } from 'vue'",
+    "import { removeBill } from '@/api/bill.js'",
+    'const visible = ref(false)',
+    'async function submit() {',
+    '  await removeBill(1)',
+    '}',
+    '</script>',
+    '',
+  ].join('\n'))
+  write('views/bill/index.vue', [
+    '<template>',
+    '  <div class="app-container">',
+    '    <el-button @click="save">保存</el-button>',
+    '    <payer-dialog ref="dlg" />',
+    '  </div>',
+    '</template>',
+    '<script setup>',
+    "import { ref } from 'vue'",
+    "import { saveBill } from '@transfusion-research-web/api/bill.js'",
+    "import PayerDialog from '@/components/PayerDialog.vue'",
+    'const ids = ref([])',
+    'async function download(id) {',
+    '  await saveBill({ id })',
+    '}',
+    'function save() {',
+    '  ids.value.forEach((id) => {',
+    '    download(id)',
+    '  })',
+    '}',
+    '</script>',
+    '',
+  ].join('\n'))
+  write('views/bill/dialog/EditDialog.vue', [
+    '<template><el-dialog v-model="visible" /></template>',
+    '<script setup>',
+    "import { ref } from 'vue'",
+    'const visible = ref(false)',
+    '</script>',
+    '',
+  ].join('\n'))
+  // 没有任何文件调用它：必须计为「无调用方」，不能摊进成功率
+  write('api/dead.js', [
+    "import request from '@/utils/request'",
+    'export function neverCalled(id) {',
+    '  return request.get(`/never/called/${id}`)',
+    '}',
+    '',
+  ].join('\n'))
+  return root
+}
+
+test('codegraph: 真实工程写法下链路可回溯，孤儿调用点单独计数（不摊薄成功率）', () => {
+  const root = makeFlatFixture()
+  const interfaces = [
+    { id: 'POST /bill/save', name: '保存', method: 'POST', path: '/bill/save' },
+    { id: 'DELETE /bill/{id}', name: '删除', method: 'DELETE', path: '/bill/{id}' },
+    { id: 'GET /never/called/{id}', name: '孤儿', method: 'GET', path: '/never/called/{id}' },
+  ]
+  try {
+    const scan = scanDirectory(root)
+    const calls = matchCalls(scan.calls, interfaces)
+    const graph = buildCodeGraph(root, { calls, interfaces })
+
+    // 模板串 `${BASE}/bill/save` 的 AST 路径与 scanner 的 `/{}/bill/save` 不一致，
+    // 仍要通过路径相似度连上触发点（否则整片调用点会被判成 not-in-ast）
+    const saveTrigger = graph.edges.triggers.find((t) => t.interfaceId === 'POST /bill/save')
+    assert.equal(saveTrigger.matchedBy, 'line')
+    assert.ok(!saveTrigger.from.includes('<module>'), '触发点应落在真实函数上')
+
+    const saveChains = chainsForEndpoint(graph, 'POST /bill/save')
+    assert.ok(saveChains.length > 0)
+    assert.equal(saveChains[0].entry.via, 'views-fallback', '无路由表时由 views 兜底入口')
+    assert.equal(saveChains[0].entry.file, 'views/bill/index.vue')
+    assert.ok(saveChains[0].nodes.some((n) => n.name === 'download'), '回调链路应经 closure 边回到外层函数')
+    assert.ok(['low', 'medium', 'high'].includes(saveChains[0].confidence))
+
+    // 弹窗组件经 component 边回到页面入口
+    const delChains = chainsForEndpoint(graph, 'DELETE /bill/{id}')
+    assert.ok(delChains[0].entry)
+    assert.equal(delChains[0].entry.file, 'views/bill/index.vue')
+    assert.ok(delChains[0].nodes.some((n) => n.file === 'components/PayerDialog.vue'))
+
+    // 孤儿调用点：有调用点但工程内没有任何调用方
+    assert.equal(graph.stats.callSitesWithCaller, 2)
+    assert.equal(graph.stats.callChainRateAmongCallable, 100)
+    assert.equal(graph.stats.callChainRate < 100, true, '全局成功率必须保留真实分母')
+    const dead = graph.noEntryCalls.find((c) => c.interfaceId === 'GET /never/called/{id}')
+    assert.ok(dead)
+    assert.equal(dead.callerCount, 0)
+    assert.equal(graph.stats.closureEdgeCount > 0, true)
+    assert.equal(classifyFile('views/bill/dialog/EditDialog.vue'), 'component', 'views 下的 dialog 不是入口页面')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  }
 })
