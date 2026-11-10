@@ -97,18 +97,19 @@ npm run lint            # 后端 + 前端 eslint（--max-warnings=0）
 npm test                # 后端 node --test（127 个用例，快速反馈）
 npm run test:frontend   # 前端 node --test（事件同步/时序回归，5 个用例）
 npm run test:coverage   # 同上 + 覆盖率门槛（行/分支/函数均 ≥70%）
-npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（82 项检查 / 12 场景）
+npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（84 项检查 / 12 场景）
 npm run verify:jacoco   # 可选：真实 JaCoCo agent 复核（需本地 JDK 17 + poc/jacoco 产物，不在 CI 跑）
 npm run ci              # lint → test:coverage → test:frontend → verify → build，与 GitHub Actions 同序
 ```
 
 覆盖率只统计核心模块（`engine`、`environments`、`suites`、`reporting`、`projects/scanner`、`infra/store`、`security`、`coverage`），
-当前本地（Windows）为行 **96.30%** / 分支 **80.80%** / 函数 **95.06%**；路由与导入器等胶水层由
-`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 31 项 + 功能域 82 项 / 12 个场景）。
+当前本地（Windows）为行 **96.31%** / 分支 **80.88%** / 函数 **94.38%**；路由与导入器等胶水层由
+`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 31 项 + 功能域 84 项 / 12 个场景）。
 
 CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑后端 lint、覆盖率门禁与场景验收，前端 lint → `npm run test`
 （事件同步时序回归 5 例）→ build，并断言构建产物 `frontend/dist/index.html` 不含令牌占位符
-（生产令牌只能由后端在响应时注入）。最近一次：run `42788561116`（sha `cc714b8`）success。
+（生产令牌只能由后端在响应时注入）。最近一次：run `42790781269`（sha `e4ad61a`）success，
+后端 **139/139**、行 **96.27%** / 分支 **80.77%** / 函数 **94.38%**。
 
 ### 目录
 
