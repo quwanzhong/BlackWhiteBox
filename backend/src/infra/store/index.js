@@ -286,6 +286,35 @@ export function createStore(db) {
       WHERE finished_at IS NULL AND status IN ('queued', 'running')
       ORDER BY started_at
     `),
+
+    // ---------- 覆盖率快照（M3-1） ----------
+    getCoverageId: db.prepare('SELECT id FROM coverage WHERE execution_id = ? AND node_id = ?'),
+    upsertCoverage: db.prepare(`
+      INSERT INTO coverage (id, execution_id, node_id, source, mode, status,
+                            exec_blob, result_json, error, captured_at, analyzed_at)
+      VALUES (@id, @executionId, @nodeId, @source, @mode, @status,
+              @execBlob, @resultJson, @error, @capturedAt, @analyzedAt)
+      ON CONFLICT(execution_id, node_id) DO UPDATE SET
+        source      = excluded.source,
+        mode        = excluded.mode,
+        status      = excluded.status,
+        exec_blob   = excluded.exec_blob,
+        result_json = excluded.result_json,
+        error       = excluded.error,
+        captured_at = excluded.captured_at,
+        analyzed_at = excluded.analyzed_at
+    `),
+    // 列表只给投影 + blob 长度：前端面板不需要几百 KB 的原始证据
+    listCoverage: db.prepare(`
+      SELECT id, execution_id, node_id, source, mode, status,
+             length(exec_blob) AS bytes, error, captured_at, analyzed_at
+      FROM coverage WHERE execution_id = ? ORDER BY captured_at, rowid
+    `),
+    getCoverage: db.prepare('SELECT * FROM coverage WHERE id = ?'),
+    updateCoverageResult: db.prepare(`
+      UPDATE coverage SET status = ?, result_json = ?, error = ?, analyzed_at = ?
+      WHERE id = ?
+    `),
   }
 
   const flowRow = (row) => (row ? parse(row.graph_json, null) : null)
@@ -327,6 +356,28 @@ export function createStore(db) {
           updatedAt: row.updated_at,
         }
       : null
+  const coverageRow = (row, { withBlob = false } = {}) => {
+    if (!row) return null
+    const out = {
+      id: row.id,
+      executionId: row.execution_id,
+      nodeId: row.node_id,
+      source: row.source,
+      mode: row.mode,
+      status: row.status,
+      error: row.error || null,
+      capturedAt: row.captured_at,
+      analyzedAt: row.analyzed_at ?? null,
+      result: parse(row.result_json, null),
+    }
+    if (withBlob) {
+      out.execBlob = row.exec_blob || null
+      out.bytes = row.exec_blob?.length ?? 0
+    } else {
+      out.bytes = row.bytes ?? row.exec_blob?.length ?? 0
+    }
+    return out
+  }
   const suiteRow = (row) =>
     row
       ? {
@@ -554,6 +605,47 @@ export function createStore(db) {
     /** M2-5：进程重启后仍非终态的套件运行（收敛为 stopped，子执行单独恢复） */
     listUnfinishedSuiteRuns() {
       return s.listUnfinishedSuiteRuns.all().map(suiteRunRow)
+    },
+
+    // ---------- 覆盖率快照（M3-1） ----------
+    /**
+     * 保存一个节点的覆盖率原始证据（同一 execution+node 覆盖写，重跑是新执行不覆盖历史）。
+     * @param {{executionId:string,nodeId:string,source?:string,mode?:string,status?:string,
+     *          execBlob?:Buffer|null,error?:string|null}} input
+     */
+    saveCoverage(input) {
+      const { executionId, nodeId } = input
+      const id = s.getCoverageId.get(executionId, nodeId)?.id || crypto.randomUUID()
+      s.upsertCoverage.run({
+        id,
+        executionId,
+        nodeId,
+        source: input.source || 'jacoco',
+        mode: input.mode || 'per-node',
+        status: input.status || 'captured',
+        execBlob: input.execBlob || null,
+        resultJson: input.result ? JSON.stringify(input.result) : null,
+        error: input.error || null,
+        capturedAt: input.capturedAt || Date.now(),
+        analyzedAt: input.analyzedAt || null,
+      })
+      return coverageRow(s.getCoverage.get(id), { withBlob: true })
+    },
+    /** M3-1：执行是否存在（覆盖率路由的 404 判定，避免为一次校验读整份详情） */
+    hasExecution(id) {
+      return Boolean(s.getExecutionRow.get(id))
+    },
+    /** M3-1：执行的全部覆盖率快照投影（不含原始 blob，只给 bytes） */
+    listExecutionCoverage(executionId) {
+      return s.listCoverage.all(executionId).map((row) => coverageRow(row))
+    },
+    getCoverage(id) {
+      return coverageRow(s.getCoverage.get(id), { withBlob: true })
+    },
+    /** M3-2：写回解析结果（原始 exec_blob 不动） */
+    updateCoverageResult(id, { status = 'analyzed', result = null, error = null } = {}) {
+      s.updateCoverageResult.run(status, result ? JSON.stringify(result) : null, error, Date.now(), id)
+      return coverageRow(s.getCoverage.get(id), { withBlob: true })
     },
     getExecutionDetail(id) {
       const row = s.getExecutionRow.get(id)

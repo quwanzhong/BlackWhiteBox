@@ -126,6 +126,61 @@ test('环境服务：字段校验与稳定错误码', async () => {
   expectEnvError(() => service.resolveEnvironment('ghost'), 'ENV_NOT_FOUND')
 })
 
+test('环境服务：settings.coverage 校验与执行期下发', async () => {
+  const service = await import('../src/environments/service.js')
+
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: 'jacoco' } }),
+    'ENV_BAD_COVERAGE'
+  )
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: { source: 'v8' } } }),
+    'ENV_BAD_COVERAGE'
+  )
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: { host: 'a b' } } }),
+    'ENV_BAD_COVERAGE'
+  )
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: { port: 0 } } }),
+    'ENV_BAD_COVERAGE'
+  )
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: { port: 65536 } } }),
+    'ENV_BAD_COVERAGE'
+  )
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: { timeoutMs: 99 } } }),
+    'ENV_BAD_COVERAGE'
+  )
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: { timeoutMs: 30001 } } }),
+    'ENV_BAD_COVERAGE'
+  )
+  expectEnvError(
+    () => service.createEnvironment({ name: 'x', settings: { coverage: { enabled: 'yes' } } }),
+    'ENV_BAD_COVERAGE'
+  )
+  expectEnvError(() => service.createEnvironment({ name: 'x', settings: 'coverage' }), 'ENV_BAD_SETTINGS')
+
+  const env = service.createEnvironment({
+    name: '覆盖率环境',
+    settings: {
+      coverage: { host: '127.0.0.1', port: 6301, timeoutMs: 800 },
+      retention: { days: 7 },
+    },
+  })
+  assert.deepEqual(env.settings, {
+    coverage: { source: 'jacoco', host: '127.0.0.1', port: 6301, timeoutMs: 800, enabled: true },
+    retention: { days: 7 },
+  })
+  const resolved = service.resolveEnvironment(env.id)
+  assert.equal(resolved.settings.coverage.port, 6301, '执行链路必须拿到 settings')
+
+  const cleared = service.updateEnvironment(env.id, { settings: { coverage: null } })
+  assert.deepEqual(cleared.settings, {}, 'coverage:null 表示关闭取证')
+})
+
 test('环境服务：secrets 只回键名，密文落库不含明文', async () => {
   const { store } = await import('../src/store.js')
   const service = await import('../src/environments/service.js')

@@ -256,3 +256,63 @@ test('迁移：JSON 一次性导入 SQLite，顺序一致且可重复调用', ()
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('coverage：原始证据按 execution+node 覆盖写，列表不含 blob', () => {
+  const { store, close } = freshStore()
+  try {
+    store.saveExecutionMeta({
+      id: 'exec-cov',
+      flowId: 'f1',
+      flowName: '覆盖率流程',
+      status: 'running',
+      startedAt: Date.now(),
+      finishedAt: null,
+      summary: null,
+    })
+    assert.equal(store.hasExecution('exec-cov'), true)
+    assert.equal(store.hasExecution('ghost'), false)
+
+    const first = store.saveCoverage({
+      executionId: 'exec-cov',
+      nodeId: 'n1',
+      execBlob: Buffer.from([1, 2, 3]),
+    })
+    assert.equal(first.status, 'captured')
+    assert.equal(first.bytes, 3)
+    assert.deepEqual(first.result, null)
+
+    // 同一节点重跑：覆盖写同一行，id 不变，证据换成最新
+    const second = store.saveCoverage({
+      executionId: 'exec-cov',
+      nodeId: 'n1',
+      execBlob: Buffer.from([4, 5]),
+    })
+    assert.equal(second.id, first.id)
+    const list = store.listExecutionCoverage('exec-cov')
+    assert.equal(list.length, 1)
+    assert.equal(list[0].bytes, 2)
+    assert.equal(list[0].execBlob, undefined, '列表投影不得带原始证据')
+
+    const analyzed = store.updateCoverageResult(first.id, {
+      result: { files: [{ path: 'A.java', covered: [1], missed: [], total: 1 }] },
+    })
+    assert.equal(analyzed.status, 'analyzed')
+    assert.equal(analyzed.result.files.length, 1)
+    assert.equal(analyzed.execBlob.toString('hex'), '0405', '解析不得改写原始证据')
+    assert.ok(analyzed.analyzedAt)
+
+    const unavailable = store.saveCoverage({
+      executionId: 'exec-cov',
+      nodeId: 'n2',
+      status: 'unavailable',
+      error: 'COVERAGE_AGENT_UNREACHABLE: 连接被拒绝',
+    })
+    assert.equal(unavailable.bytes, 0)
+    assert.equal(unavailable.execBlob, null)
+    assert.match(unavailable.error, /UNREACHABLE/)
+    assert.deepEqual(store.listExecutionCoverage('exec-cov').map((r) => r.nodeId), ['n1', 'n2'])
+    assert.deepEqual(store.listExecutionCoverage('exec-other'), [])
+  } finally {
+    close()
+  }
+})

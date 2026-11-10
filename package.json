@@ -13,6 +13,7 @@
     "test": "npm run test --prefix backend",
     "test:coverage": "npm run test:coverage --prefix backend",
     "verify": "npm run verify --prefix backend",
+    "verify:jacoco": "npm run verify:jacoco --prefix backend",
     "ci": "npm run lint && npm run test:coverage && npm run verify && npm run build"
   },
   "devDependencies": {

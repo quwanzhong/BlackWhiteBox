@@ -7,6 +7,7 @@ import { sessions } from './registry.js'
 import { evaluateCondition } from '../security/expression.js'
 import { maskDeep } from '../environments/service.js'
 import { classifyStep, classifyExecution } from '../reporting/classify.js'
+import { createCoverageCollector } from '../coverage/collector.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -37,6 +38,9 @@ export class RunSession {
           baseUrl: opts.environment.baseUrl || '',
           headers: opts.environment.headers || {},
           variables: opts.environment.variables || {},
+          // 环境设置（M3-1：settings.coverage 决定本会话是否做覆盖率取证）。
+          // 只含 host/port/timeout 等非敏感配置，可随执行上下文落库。
+          settings: opts.environment.settings || {},
         }
       : null
     // 变量优先级（低 → 高）：flow.variables < Environment（含 secrets）
@@ -77,6 +81,14 @@ export class RunSession {
       : store.getEventSeq(this.executionId) || 0
     this.currentReady = null
     this.resumed = Boolean(opts.resume)
+    // M3-1：覆盖率采集器（未配置 settings.coverage 时为空实现，begin/end 均返回 null）。
+    // 场景/单测可注入 collector，避免依赖真实 TCP agent。
+    this.coverage =
+      opts.coverageCollector ||
+      createCoverageCollector({
+        executionId: this.executionId,
+        settings: opts.environment?.settings,
+      })
     if (Number.isInteger(opts.startedAt)) this.startedAt = opts.startedAt
     if (opts.resume) this.applyResume(opts.resume)
   }
@@ -465,37 +477,70 @@ export class RunSession {
         }
         step.status = pass ? 'passed' : 'failed'
       } else {
-        const result = await executeNode(node, {
-          vars: this.vars,
-          last: this.last,
-          baseUrl: this.baseUrl,
-          defaultHeaders: this.defaultHeaders,
-        })
-        step.request = result.request
-        step.actual = {
-          status: result.status,
-          data: result.data,
-          headers: result.headers,
-          durationMs: result.durationMs,
+        // M3-1：节点前 reset、节点后 dumpAndReset；采集失败只降级，不影响节点结论。
+        // collector 本身已吞异常，这里再兜一层：观测能力绝不能把执行带崩。
+        try {
+          await this.coverage.begin(nodeId)
+        } catch (err) {
+          this.log(`覆盖率采集开始失败：${err.message}`, 'warn')
         }
-        step.checks = runChecks(node.expected, result)
+        try {
+          const result = await executeNode(node, {
+            vars: this.vars,
+            last: this.last,
+            baseUrl: this.baseUrl,
+            defaultHeaders: this.defaultHeaders,
+          })
+          step.request = result.request
+          step.actual = {
+            status: result.status,
+            data: result.data,
+            headers: result.headers,
+            durationMs: result.durationMs,
+          }
+          step.checks = runChecks(node.expected, result)
 
-        // 变量提取：把响应里的值存进变量表，供后续节点 {{var}} 使用
-        const extracted = {}
-        for (const [name, path] of Object.entries(node.extract || {})) {
-          extracted[name] = resolvePath(result.data, path)
-          if (extracted[name] !== undefined) this.vars[name] = extracted[name]
+          // 变量提取：把响应里的值存进变量表，供后续节点 {{var}} 使用
+          const extracted = {}
+          for (const [name, path] of Object.entries(node.extract || {})) {
+            extracted[name] = resolvePath(result.data, path)
+            if (extracted[name] !== undefined) this.vars[name] = extracted[name]
+          }
+          step.extracted = extracted
+          if (Object.keys(extracted).length) {
+            this.log(
+              `提取变量：${Object.entries(extracted)
+                .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+                .join('，')}`
+            )
+          }
+          this.last = result
+          step.status = step.checks.matched ? 'passed' : 'failed'
+        } finally {
+          // 请求抛错也要取数：失败请求本身可能已走到部分源码行，是排障证据
+          let coverage = null
+          try {
+            coverage = await this.coverage.end(nodeId)
+          } catch (err) {
+            this.log(`覆盖率取证失败：${err.message}`, 'warn')
+          }
+          if (coverage) {
+            step.coverageId = coverage.id
+            step.coverage = coverage
+            // pending=true 表示原始 .exec 已拿到、M3-2 才解析成行覆盖
+            this.emit('coverage.dump', {
+              nodeId,
+              nodeName: node.name,
+              coverageId: coverage.id,
+              source: coverage.source,
+              mode: coverage.mode,
+              status: coverage.status,
+              bytes: coverage.bytes,
+              error: coverage.error,
+              pending: coverage.pending,
+            })
+          }
         }
-        step.extracted = extracted
-        if (Object.keys(extracted).length) {
-          this.log(
-            `提取变量：${Object.entries(extracted)
-              .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-              .join('，')}`
-          )
-        }
-        this.last = result
-        step.status = step.checks.matched ? 'passed' : 'failed'
       }
     } catch (err) {
       step.status = 'failed'
@@ -523,6 +568,8 @@ export class RunSession {
       request: step.request,
       error: step.error,
       extracted: step.extracted,
+      // M3-1：覆盖率取证结果（status=captured 时 pending=true，等待 M3-2 解析）
+      coverage: step.coverage || null,
       // M2-3：实时通道直接带归类，前端不必再拉详情
       failureClass: step.failureClass,
       failureReason: step.failureReason,
@@ -649,6 +696,8 @@ export class RunSession {
     this.saveMeta()
     this.emit('flow_end', { status: this.status, summary: this.summary })
     this.persist()
+    // M3-1：会话结束释放 agent 连接（collector 内部已吞掉关闭异常）
+    this.coverage.close().catch(() => {})
     sessions.delete(this.executionId)
   }
 }

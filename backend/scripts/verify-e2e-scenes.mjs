@@ -13,12 +13,15 @@
  *   场景 9  失败归类：8 类规则逐条命中 → 列表筛选 → 归类原因脱敏 → 事件/套件口径一致
  *   场景 10 报告导出：JUnit/HTML/JSON 三格式 → S8 脱敏 → 计数一致 → 套件导出 → 400/404
  *   场景 11 会话恢复：真实子进程执行 → 强杀 → 重启后按断点续跑 → 断线重放 after → 人工确认收尾
+ *   场景 12 覆盖率取证：环境 settings.coverage → 每节点 reset/dump → 快照落库/投影/事件 →
+ *          agent 缺失时降级为 unavailable（节点结论不受影响）
  *
  * 环境与 verify-m1-3 同口径：临时库 + 真实端口 + token；Apifox 侧只依赖本机缓存文件
  * （oas-cache.json，MCP 拉取的产物格式），不依赖外网。
  */
 import fs from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -1366,6 +1369,250 @@ try {
   await stopBackend(backend11)
 }
 
+// ================================================================ 场景 12 · 覆盖率取证（M3-1）
+const JACOCO_HEADER12 = Buffer.from([0x01, 0xc0, 0xc0, 0x10, 0x07])
+
+function jacocoVarint12(value) {
+  const out = []
+  let left = value
+  do {
+    let byte = left & 0x7f
+    left >>>= 7
+    if (left) byte |= 0x80
+    out.push(byte)
+  } while (left)
+  return Buffer.from(out)
+}
+
+/** SESSIONINFO 块：0x10 + id 长度 + id + 16 字节时间戳 */
+function jacocoSession12(id) {
+  const idBuf = Buffer.from(id)
+  const len = Buffer.alloc(2)
+  len.writeUInt16BE(idBuf.length)
+  return Buffer.concat([Buffer.from([0x10]), len, idBuf, Buffer.alloc(16)])
+}
+
+/** EXECUTIONDATA 块：0x11 + classId + 名称 + varint(探针数) + 位图 */
+function jacocoExec12(name, probes) {
+  const nameBuf = Buffer.from(name)
+  const len = Buffer.alloc(2)
+  len.writeUInt16BE(nameBuf.length)
+  return Buffer.concat([
+    Buffer.from([0x11]),
+    Buffer.alloc(8, 0xab),
+    len,
+    nameBuf,
+    jacocoVarint12(probes),
+    Buffer.alloc(Math.ceil(probes / 8), 0x81),
+  ])
+}
+
+/**
+ * 协议级假 agent（不依赖 JDK，CI 可跑）：
+ *   - 连接后主动发 5 字节 exec 头，客户端必须原样回写；
+ *   - reset 只回 CMDOK，dump 回「会话块 + 执行数据块 + CMDOK」；
+ *   - 记录每条命令，供断言「每节点 reset → dump」的调用顺序。
+ */
+async function startFakeAgent12() {
+  const commands = []
+  const sockets = new Set()
+  let totalConnections = 0
+  const server = net.createServer((socket) => {
+    totalConnections += 1
+    sockets.add(socket)
+    socket.on('close', () => sockets.delete(socket))
+    socket.on('error', () => {})
+    socket.write(JACOCO_HEADER12)
+
+    let buffer = Buffer.alloc(0)
+    let handshake = false
+    socket.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, chunk])
+      if (!handshake) {
+        if (buffer.length < 5) return
+        handshake = true
+        buffer = buffer.subarray(5) // 握手回写的 5 字节
+      }
+      while (buffer.length >= 3) {
+        const frame = buffer.subarray(0, 3)
+        buffer = buffer.subarray(3)
+        commands.push({ cmd: frame[0], dump: frame[1], reset: frame[2] })
+        if (frame[1] === 1) {
+          socket.write(
+            Buffer.concat([
+              jacocoSession12('scene12'),
+              jacocoExec12('com/poc/OrderService', 300),
+              Buffer.from([0x20]),
+            ])
+          )
+        } else {
+          socket.write(Buffer.from([0x20]))
+        }
+      }
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  return {
+    port: server.address().port,
+    commands,
+    connections: () => totalConnections,
+    async close() {
+      for (const socket of sockets) socket.destroy()
+      server.closeAllConnections?.()
+      await new Promise((resolve) => server.close(resolve))
+    },
+  }
+}
+
+const agent12 = await startFakeAgent12()
+try {
+  // 12.1 环境配置：settings.coverage 归一化后落库，非法来源/端口直接 400
+  const badCoverage12 = await post('/api/environments', {
+    name: '场景12 坏覆盖率',
+    settings: { coverage: { source: 'v8' } },
+  })
+  const env12 = await (
+    await post('/api/environments', {
+      name: '场景12 覆盖率环境',
+      projectId: project.id,
+      baseUrl: stubBase,
+      settings: { coverage: { host: '127.0.0.1', port: agent12.port, timeoutMs: 2000 } },
+    })
+  ).json()
+  const env12Detail = await (await get(`/api/environments/${env12.id}`)).json()
+  check(
+    '12.1 环境 settings.coverage：归一化 source/enabled 后落库；非法 source → 400 ENV_BAD_COVERAGE',
+    badCoverage12.status === 400 &&
+      (await badCoverage12.json()).code === 'ENV_BAD_COVERAGE' &&
+      env12Detail.settings?.coverage?.source === 'jacoco' &&
+      env12Detail.settings?.coverage?.port === agent12.port &&
+      env12Detail.settings?.coverage?.enabled === true,
+    `port=${env12Detail.settings?.coverage?.port}`
+  )
+
+  const flow12 = await (
+    await post('/api/flows', {
+      name: '场景12 覆盖率取证',
+      type: 'whitebox',
+      projectId: project.id,
+      nodes: [
+        {
+          id: 'n1',
+          name: '登录接口',
+          action: { type: 'http', method: 'GET', url: `${stubBase}/api/login` },
+          expected: { status: 200, checks: [] },
+        },
+        {
+          id: 'n2',
+          name: '订单接口',
+          action: { type: 'http', method: 'GET', url: `${stubBase}/api/orders` },
+          expected: { status: 200, checks: [] },
+        },
+      ],
+      edges: [{ id: 'e1', from: 'n1', to: 'n2', condition: '' }],
+    })
+  ).json()
+  const run12 = await (await post(`/api/flows/${flow12.id}/run`, { environmentId: env12.id })).json()
+  const detail12 = await waitDone(run12.executionId)
+  const cov12 = await (await get(`/api/executions/${run12.executionId}/coverage`)).json()
+
+  // 12.2 每个 HTTP 节点一份快照：captured + pending，步骤里带 coverageId
+  check(
+    '12.2 每节点一份覆盖率快照：status=captured、pending=true，步骤记录 coverageId',
+    detail12.status === 'passed' &&
+      detail12.steps.length === 2 &&
+      detail12.steps.every(
+        (s) => s.coverage?.status === 'captured' && s.coverage?.pending === true && !!s.coverageId
+      ),
+    `steps=${detail12.steps.map((s) => `${s.nodeId}:${s.coverage?.status}/${s.coverage?.bytes}B`).join(',')}`
+  )
+
+  // 12.3 投影接口：按执行聚合计数，绝不返回原始 .exec
+  const covText12 = JSON.stringify(cov12)
+  check(
+    '12.3 GET /:id/coverage 投影：count=2、pending=2、不含 execBlob，原始证据只在库里',
+    cov12.executionId === run12.executionId &&
+      cov12.count === 2 &&
+      cov12.pending === 2 &&
+      cov12.unavailable === 0 &&
+      cov12.coverage.map((c) => c.nodeId).join() === 'n1,n2' &&
+      cov12.coverage.every((c) => c.bytes > 5 && c.execBlob === undefined) &&
+      !covText12.includes('execBlob'),
+    `count=${cov12.count} bytes=${cov12.coverage.map((c) => c.bytes).join('/')}`
+  )
+
+  // 12.4 事件契约：每次取证一条 coverage.dump，seq 全量连续
+  const dumps12 = detail12.events.filter((e) => e.type === 'coverage.dump')
+  check(
+    '12.4 实时事件：每节点一条 coverage.dump（带 nodeId/coverageId/pending），seq 连续',
+    dumps12.length === 2 &&
+      dumps12.map((e) => e.payload.nodeId).join() === 'n1,n2' &&
+      dumps12.every((e) => !!e.payload.coverageId && e.payload.pending === true) &&
+      detail12.events.every((e, i) => e.seq === i + 1),
+    `dumps=${dumps12.map((e) => e.payload.nodeId).join(',')} events=${detail12.events.length}`
+  )
+
+  // 12.5 协议证据：连接复用，每个节点「reset → dump」成对出现
+  const frames12 = agent12.commands.map((c) => `${c.cmd.toString(16)}/${c.dump}/${c.reset}`)
+  check(
+    '12.5 协议时序：一次连接内每节点 reset → dumpAndReset，命令帧 40/0/1 与 40/1/1 交替',
+    frames12.join() === '40/0/1,40/1/1,40/0/1,40/1/1' && agent12.connections() === 1,
+    `frames=${frames12.join(',')} connections=${agent12.connections()}`
+  )
+
+  // 12.6 降级：agent 不可达时节点照常通过，但覆盖率必须写 unavailable（绝不伪装成 0%）
+  const deadPort12 = await freePort()
+  const deadEnv12 = await (
+    await post('/api/environments', {
+      name: '场景12 无 agent',
+      projectId: project.id,
+      baseUrl: stubBase,
+      settings: { coverage: { host: '127.0.0.1', port: deadPort12, timeoutMs: 200 } },
+    })
+  ).json()
+  const run12d = await (await post(`/api/flows/${flow12.id}/run`, { environmentId: deadEnv12.id })).json()
+  const detail12d = await waitDone(run12d.executionId)
+  const cov12d = await (await get(`/api/executions/${run12d.executionId}/coverage`)).json()
+  check(
+    '12.6 agent 不可达降级：执行仍 passed，覆盖率两条 unavailable 且带稳定错误码',
+    detail12d.status === 'passed' &&
+      detail12d.steps.every((s) => s.status === 'passed' && s.coverage?.status === 'unavailable') &&
+      cov12d.count === 2 &&
+      cov12d.unavailable === 2 &&
+      cov12d.pending === 0 &&
+      cov12d.coverage.every((c) => c.bytes === 0 && /^COVERAGE_AGENT_UNREACHABLE: /.test(c.error)),
+    `status=${detail12d.status} cov=${cov12d.coverage.map((c) => `${c.status}/${c.bytes}B`).join(',')}`
+  )
+
+  // 12.7 未配置覆盖率的环境：不产生任何行（白盒字段保持空，而不是 0 行可用/不可用混淆）
+  const plainEnv12 = await (
+    await post('/api/environments', {
+      name: '场景12 未配置',
+      projectId: project.id,
+      baseUrl: stubBase,
+    })
+  ).json()
+  const run12p = await (await post(`/api/flows/${flow12.id}/run`, { environmentId: plainEnv12.id })).json()
+  const detail12p = await waitDone(run12p.executionId)
+  const cov12p = await (await get(`/api/executions/${run12p.executionId}/coverage`)).json()
+  check(
+    '12.7 未配置覆盖率：执行正常但 count=0、步骤无 coverage、无 coverage.dump 事件',
+    detail12p.status === 'passed' &&
+      cov12p.count === 0 &&
+      detail12p.steps.every((s) => !s.coverage) &&
+      !detail12p.events.some((e) => e.type === 'coverage.dump'),
+    `count=${cov12p.count}`
+  )
+
+  const ghost12 = await get('/api/executions/ghost-exec/coverage')
+  check(
+    '12.8 未知执行的覆盖率接口 → 404 EXECUTION_NOT_FOUND',
+    ghost12.status === 404 && (await ghost12.json()).code === 'EXECUTION_NOT_FOUND'
+  )
+} finally {
+  await agent12.close()
+}
+
 // ---------------------------------------------------------------- 汇总
 console.log('\n结论')
 console.log('-'.repeat(78))
@@ -1375,7 +1622,7 @@ for (const r of results) {
   console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  —  ${r.detail}` : ''}`)
 }
 console.log('-'.repeat(78))
-console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，11 个场景）`)
+console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，12 个场景）`)
 
 await new Promise((resolve) => appCtx.io.close(resolve))
 await new Promise((resolve) => appCtx.server.close(resolve))

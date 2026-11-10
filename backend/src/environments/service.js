@@ -26,7 +26,12 @@ const MAX_NAME = 60
 const MAX_BASE_URL = 2048
 const MAX_SECRET_BYTES = 4096
 const MAX_VARIABLES_JSON = 64 * 1024
+const MAX_SETTINGS_JSON = 8 * 1024
 const MAX_KEYS = 200
+/** M3-1：覆盖率取证的合法来源（V8 / lcov 留给 M3-3） */
+const COVERAGE_SOURCES = ['jacoco']
+const MIN_COVERAGE_TIMEOUT_MS = 100
+const MAX_COVERAGE_TIMEOUT_MS = 30000
 export const SECRET_MASK = '***'
 /** 文本掩码最短明文长度：过短的值做全局替换会大面积误伤正常文本 */
 const MIN_MASK_LEN = 3
@@ -142,6 +147,88 @@ function normalizeHeaders(input) {
   return out
 }
 
+/**
+ * M3-1：`settings.coverage` 校验。只允许 jacoco；端口/超时做范围限制，
+ * 避免环境配置把执行链路带进「连 0 端口」或「等 10 分钟」的坑。
+ */
+function normalizeCoverageSettings(input) {
+  // 显式传 null 表示关闭覆盖率取证
+  if (input === null) return null
+  if (!isPlainObject(input)) {
+    throw new EnvironmentError('ENV_BAD_COVERAGE', 'settings.coverage 必须是对象或 null')
+  }
+  const source = input.source === undefined ? 'jacoco' : String(input.source)
+  if (!COVERAGE_SOURCES.includes(source)) {
+    throw new EnvironmentError(
+      'ENV_BAD_COVERAGE',
+      `settings.coverage.source 仅支持 ${COVERAGE_SOURCES.join('/')}，收到「${source}」`
+    )
+  }
+
+  let host = '127.0.0.1'
+  if (input.host !== undefined) {
+    host = String(input.host).trim()
+    if (!host) throw new EnvironmentError('ENV_BAD_COVERAGE', 'settings.coverage.host 不能为空')
+    if (host.length > 255 || /[\s\r\n]/.test(host)) {
+      throw new EnvironmentError(
+        'ENV_BAD_COVERAGE',
+        'settings.coverage.host 不合法：只能是主机名/IP，最长 255 字符且不能含空白'
+      )
+    }
+  }
+
+  let port = 6300
+  if (input.port !== undefined) {
+    port = Number(input.port)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new EnvironmentError('ENV_BAD_COVERAGE', 'settings.coverage.port 必须是 1..65535 的整数')
+    }
+  }
+
+  let timeoutMs = 5000
+  if (input.timeoutMs !== undefined) {
+    timeoutMs = Number(input.timeoutMs)
+    if (
+      !Number.isInteger(timeoutMs) ||
+      timeoutMs < MIN_COVERAGE_TIMEOUT_MS ||
+      timeoutMs > MAX_COVERAGE_TIMEOUT_MS
+    ) {
+      throw new EnvironmentError(
+        'ENV_BAD_COVERAGE',
+        `settings.coverage.timeoutMs 必须是 ${MIN_COVERAGE_TIMEOUT_MS}..${MAX_COVERAGE_TIMEOUT_MS} 的整数`
+      )
+    }
+  }
+
+  let enabled = true
+  if (input.enabled !== undefined) {
+    if (typeof input.enabled !== 'boolean') {
+      throw new EnvironmentError('ENV_BAD_COVERAGE', 'settings.coverage.enabled 必须是布尔值')
+    }
+    enabled = input.enabled
+  }
+
+  return { source, host, port, timeoutMs, enabled }
+}
+
+/** `settings` 是预留扩展位：未知键原样保留，已知键严格校验 */
+function normalizeSettings(input) {
+  const obj = assertObject(input, 'settings', 'ENV_BAD_SETTINGS')
+  const out = { ...obj }
+  if (Object.hasOwn(obj, 'coverage')) {
+    const coverage = normalizeCoverageSettings(obj.coverage)
+    if (coverage) out.coverage = coverage
+    else delete out.coverage
+  }
+  if (JSON.stringify(out).length > MAX_SETTINGS_JSON) {
+    throw new EnvironmentError(
+      'ENV_SETTINGS_TOO_LARGE',
+      `settings 序列化后超过 ${MAX_SETTINGS_JSON} 字节`
+    )
+  }
+  return out
+}
+
 function normalizeSecrets(input) {
   const obj = assertObject(input, 'secrets', 'ENV_BAD_SECRETS')
   const out = {}
@@ -245,6 +332,7 @@ export function createEnvironment(input = {}) {
   const baseUrl = normalizeBaseUrl(input.baseUrl)
   const variables = normalizeVariables(input.variables)
   const headers = normalizeHeaders(input.headers)
+  const settings = normalizeSettings(input.settings)
   const secrets = normalizeSecrets(input.secrets)
   assertNoKeyConflict(variables, Object.keys(secrets))
 
@@ -256,7 +344,7 @@ export function createEnvironment(input = {}) {
     baseUrl,
     variables,
     headers,
-    settings: isPlainObject(input.settings) ? input.settings : {},
+    settings,
     version: 1,
     createdAt: now,
     updatedAt: now,
@@ -273,10 +361,7 @@ export function updateEnvironment(id, input = {}) {
   const baseUrl = input.baseUrl === undefined ? row.baseUrl : normalizeBaseUrl(input.baseUrl)
   const variables = input.variables === undefined ? row.variables : normalizeVariables(input.variables)
   const headers = input.headers === undefined ? row.headers : normalizeHeaders(input.headers)
-  if (input.settings !== undefined && !isPlainObject(input.settings)) {
-    throw new EnvironmentError('ENV_BAD_SETTINGS', 'settings 必须是对象')
-  }
-  const settings = input.settings === undefined ? row.settings : input.settings
+  const settings = input.settings === undefined ? row.settings : normalizeSettings(input.settings)
 
   assertNoKeyConflict(variables, store.listSecretKeys(id))
   saveWithNameGuard({
@@ -339,6 +424,7 @@ export function resolveEnvironment(id) {
     baseUrl: row.baseUrl,
     headers: { ...row.headers },
     variables: { ...row.variables, ...secrets },
+    settings: { ...row.settings },
     secretValues: Object.values(secrets),
   }
 }

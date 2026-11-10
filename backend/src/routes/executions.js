@@ -85,6 +85,26 @@ router.get('/:id/events', (req, res) => {
   res.json(result)
 })
 
+/**
+ * M3-1：按节点归因的覆盖率快照（投影，不含原始 exec blob）。
+ * 未配置覆盖率的环境不会产生行，返回空数组；配置了但 agent 不可用会有
+ * `status='unavailable'` 行，前端据此显示「无运行时证据」而不是 0%。
+ */
+router.get('/:id/coverage', (req, res) => {
+  const id = req.params.id
+  if (!store.hasExecution(id)) {
+    return res.status(404).json({ error: '执行记录不存在', code: 'EXECUTION_NOT_FOUND' })
+  }
+  const coverage = store.listExecutionCoverage(id)
+  res.json({
+    executionId: id,
+    count: coverage.length,
+    unavailable: coverage.filter((item) => item.status === 'unavailable').length,
+    pending: coverage.filter((item) => item.status === 'captured').length,
+    coverage,
+  })
+})
+
 // 暂停
 router.post('/:id/pause', (req, res) => {
   const session = sessions.get(req.params.id)

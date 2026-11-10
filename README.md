@@ -44,6 +44,9 @@
 - **断线重放与会话恢复（M2-5）**：事件在 `RunSession` 内同步编号，`GET /events?after=<seq>` 增量补齐；
   执行会话按节点边界持久化，进程被强杀后重启会从断点续跑——已完成节点不重跑、中断尝试留下 `skipped` 证据、
   暂停状态保持；未完成的套件运行收敛为 `stopped`，不擅自续跑。
+- **覆盖率取证（M3-1）**：环境里配置 JaCoCo agent（`settings.coverage`）后，每个 HTTP 节点执行前 `reset`、
+  结束后 `dumpAndReset`，原始 `.exec` 按节点落进 SQLite，`GET /api/executions/:id/coverage` 返回不含原始字节的聚合投影，
+  实时推送 `coverage.dump`；agent 连不上时该节点记 `unavailable` + 稳定错误码，**节点结论不受影响、绝不伪装成 0% 或通过**。
 - **缺陷反馈**：报告失败步骤一键提缺陷，记录流程、请求、实际值 / 期望值与校验差异，支持状态流转与按项目筛选。
 - **Java 白盒分析器**：JDK 内置解析 API 实现，零第三方依赖，输出调用链 JSON 直接导入。
 
@@ -84,15 +87,16 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 
 ```bash
 npm run lint            # 后端 + 前端 eslint（--max-warnings=0）
-npm test                # 后端 node --test（102 个用例，快速反馈）
+npm test                # 后端 node --test（127 个用例，快速反馈）
 npm run test:coverage   # 同上 + 覆盖率门槛（行/分支/函数均 ≥70%）
-npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（74 项检查）
+npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（82 项检查 / 12 场景）
+npm run verify:jacoco   # 可选：真实 JaCoCo agent 复核（需本地 JDK 17 + poc/jacoco 产物，不在 CI 跑）
 npm run ci              # lint → test:coverage → verify → build，与 GitHub Actions 同序
 ```
 
-覆盖率只统计核心模块（`engine`、`environments`、`suites`、`reporting`、`projects/scanner`、`infra/store`、`security`），
-当前本地（Windows）为行 **96.07%** / 分支 **79.61%** / 函数 **95.79%**；路由与导入器等胶水层由
-`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 74 项 / 11 个场景）。
+覆盖率只统计核心模块（`engine`、`environments`、`suites`、`reporting`、`projects/scanner`、`infra/store`、`security`、`coverage`），
+当前本地（Windows）为行 **96.29%** / 分支 **80.80%** / 函数 **95.06%**；路由与导入器等胶水层由
+`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 82 项 / 12 个场景）。
 
 CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率门禁与场景验收，并断言构建产物
 `frontend/dist/index.html` 不含令牌占位符（生产令牌只能由后端在响应时注入）。
@@ -241,6 +245,10 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 - [x] 失败自动归类 8 类 + 报告筛选（M2-3）
 - [x] 执行 / 套件导出 JUnit · HTML · JSON + 导出脱敏（M2-4）
 - [x] 会话持久化 + 断线重放 `seq` / `after` + 强杀重启续跑（M2-5）
+- [x] 覆盖率取证：每节点 JaCoCo `.exec` 快照 + 聚合投影 API + 无证据降级（M3-1）
+- [ ] 覆盖率解析：jacococli 批量分析 + 行级 `covered/missed`（M3-2）
+- [ ] 覆盖率面板：节点徽标 / 未覆盖行 / 跳源码（M3-3）
+- [ ] 白盒断言 `mustHit` / `mustMiss`（M3-4）
 - [ ] 流程 DSL 版本化与导入校验
 - [ ] 断言提取联动（把提取值直接回填到断言）
 - [ ] 定时执行 + 失败通知（企业微信 / 飞书）
