@@ -11,6 +11,7 @@
  *   场景 7  环境与密钥：CRUD → 变量优先级 → baseUrl/Header → secrets 不落明文 → 错误码
  *   场景 8  套件与队列：CRUD → 并发上限 → 重试/flaky → failFast → 停止 → 删除语义
  *   场景 9  失败归类：8 类规则逐条命中 → 列表筛选 → 归类原因脱敏 → 事件/套件口径一致
+ *   场景 10 报告导出：JUnit/HTML/JSON 三格式 → S8 脱敏 → 计数一致 → 套件导出 → 400/404
  *
  * 环境与 verify-m1-3 同口径：临时库 + 真实端口 + token；Apifox 侧只依赖本机缓存文件
  * （oas-cache.json，MCP 拉取的产物格式），不依赖外网。
@@ -55,6 +56,14 @@ const stub = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/orders') {
       return send(200, { code: 0, data: { orders: [{ id: 11, total: 99 }], count: 1 } })
+    }
+    if (url.pathname === '/api/secure') {
+      // 场景 10 专用：响应头带会话 cookie（导出必须打码），响应体不带任何请求回显
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'set-cookie': 'sid=scene10-cookie-secret; Path=/; HttpOnly',
+      })
+      return res.end(JSON.stringify({ code: 0, data: { ok: true, orderId: 'order-1' } }))
     }
     if (url.pathname === '/api/scene8-flaky') {
       scene8FlakyHits += 1
@@ -969,6 +978,162 @@ check(
     .join(',')}`
 )
 
+// ================================================================ 场景 10 · 报告导出（M2-4）
+// 覆盖：三格式可下载 → S8 脱敏（env secret / 请求头 / query / 请求体 / 响应头）→
+//       计数与详情页一致 → 套件导出 → 非法格式 400 / 不存在 404。
+const SECRET_ENV10 = 'scene10-env-secret-value'
+const SECRET_HEADER10 = 'scene10-literal-header-secret'
+const SECRET_BODY10 = 'scene10-literal-body-secret'
+const SECRET_COOKIE10 = 'scene10-cookie-secret'
+const SECRETS10 = [SECRET_ENV10, SECRET_HEADER10, SECRET_BODY10, SECRET_COOKIE10]
+const leaks10 = (text) => SECRETS10.filter((s) => String(text).includes(s))
+
+const env10 = await (
+  await post('/api/environments', {
+    name: '场景10 导出脱敏',
+    projectId: project.id,
+    baseUrl: stubBase,
+    secrets: { s10: SECRET_ENV10 },
+  })
+).json()
+
+// 主流程：query 里用 env secret，头/体用字面量密钥（只有导出期脱敏能拦住），期望 201 实际 200 → failed
+const mainFlow10 = await makeClassFlow('场景10 导出主流程', [
+  node9(
+    'e1',
+    `${stubBase}/api/secure?access_token={{s10}}&ms=10`,
+    { status: 201, checks: [] },
+    {
+      method: 'POST',
+      headers: { authorization: `Bearer ${SECRET_HEADER10}`, 'x-trace': 'trace-keep' },
+      body: { user: 'alice', password: SECRET_BODY10 },
+    }
+  ),
+  node9('e2', `${stubBase}/api/orders`, { status: 200, checks: [] }),
+], [{ from: 'e1', to: 'e2' }])
+const mainRun10 = await run9(mainFlow10.id, { environmentId: env10.id })
+const mainDetail10 = await waitDone(mainRun10.executionId)
+
+const fetchText = async (p) => {
+  const res = await get(p)
+  return { status: res.status, type: res.headers.get('content-type') || '', disposition: res.headers.get('content-disposition') || '', text: await res.text(), res }
+}
+
+const junit10 = await fetchText(`/api/executions/${mainDetail10.id}/export?format=junit`)
+const html10 = await fetchText(`/api/executions/${mainDetail10.id}/export?format=HTML`)
+const json10 = await fetchText(`/api/executions/${mainDetail10.id}/export`)
+
+check(
+  '10.1 单条执行三格式：JUnit/HTML/JSON 均可下载且头部语义正确',
+  junit10.status === 200 &&
+    /^application\/xml/.test(junit10.type) &&
+    /attachment; filename="heibaihe-.*\.junit\.xml"/.test(junit10.disposition) &&
+    /filename\*=UTF-8''/.test(junit10.disposition) &&
+    /^<\?xml version="1.0"/.test(junit10.text) &&
+    html10.status === 200 &&
+    /^text\/html/.test(html10.type) &&
+    /^<!DOCTYPE html>/.test(html10.text) &&
+    !/<link/i.test(html10.text) &&
+    !/<script/i.test(html10.text) &&
+    !/\b(?:src|href)=/i.test(html10.text) &&
+    json10.status === 200 &&
+    /^application\/json/.test(json10.type),
+  `junit=${junit10.status} html=${html10.status} json=${json10.status}`
+)
+
+const json10Body = JSON.parse(json10.text)
+check(
+  '10.2 JUnit 计数与详情页一致，失败/跳过各自落位，大小写不敏感',
+  /<testsuites[^>]*tests="2"[^>]*failures="1"[^>]*skipped="1"/.test(junit10.text) &&
+    /<failure type="status"/.test(junit10.text) &&
+    /<skipped message=/.test(junit10.text) &&
+    (junit10.text.match(/<testcase/g) || []).length === mainDetail10.steps.length &&
+    json10Body.version === 1 &&
+    json10Body.kind === 'execution' &&
+    json10Body.execution.steps.length === mainDetail10.steps.length &&
+    json10Body.execution.summary.failed === mainDetail10.summary.failed &&
+    json10Body.execution.summary.passed === mainDetail10.summary.passed,
+  `tests=${mainDetail10.steps.length} junit=${/tests="(\d+)"/.exec(junit10.text)?.[1]}`
+)
+
+check(
+  '10.3 S8：三格式都不含 env secret / 头 / 请求体 / 响应头 cookie 明文，敏感位置为 ***',
+  [...leaks10(junit10.text), ...leaks10(html10.text), ...leaks10(json10.text)].length === 0 &&
+    /access_token=\*\*\*/.test(junit10.text) &&
+    json10Body.execution.steps[0].request.headers.authorization === '***' &&
+    json10Body.execution.steps[0].request.body.password === '***' &&
+    json10Body.execution.steps[0].actual.headers['set-cookie'] === '***' &&
+    json10Body.execution.steps[0].request.headers['x-trace'] === 'trace-keep' &&
+    json10Body.execution.steps[0].request.url.includes('access_token=***'),
+  `leaks=${leaks10(junit10.text + html10.text + json10.text).join(',') || 'none'}`
+)
+
+check(
+  '10.4 响应体保留证据（不按键名剥离），与写入期 env 掩码职责分离',
+  json10Body.execution.steps[0].actual.data.data.orderId === 'order-1' &&
+    /order-1/.test(html10.text) &&
+    json10Body.scrubbed.responseBody === false,
+  `scrubbed=${JSON.stringify(json10Body.scrubbed)}`
+)
+
+// —— 套件导出：一次运行 = 一份报告，重试只取最后一次尝试 ——
+const passFlow10 = await makeClassFlow('场景10 导出对照流程', [
+  node9('p1', `${stubBase}/api/orders`, { status: 200, checks: [] }),
+])
+const suite10 = await (
+  await post('/api/suites', {
+    name: '场景10 导出套件',
+    projectId: project.id,
+    flowIds: [mainFlow10.id, passFlow10.id],
+    environmentId: env10.id,
+    strategy: { concurrency: 1, retry: 0 },
+  })
+).json()
+const suiteRun10 = await (await post(`/api/suites/${suite10.id}/run`, {})).json()
+const suiteDone10 = await waitSuiteRun(suiteRun10.suiteRunId)
+
+const suiteJunit10 = await fetchText(`/api/suite-runs/${suiteDone10.id}/export?format=junit`)
+const suiteHtml10 = await fetchText(`/api/suite-runs/${suiteDone10.id}/export?format=html`)
+const suiteJson10 = await fetchText(`/api/suite-runs/${suiteDone10.id}/export?format=json`)
+const suiteJson10Body = JSON.parse(suiteJson10.text)
+const suiteSteps10 = suiteJson10Body.executions.reduce((n, e) => n + (e.steps || []).length, 0)
+
+check(
+  '10.5 套件导出：properties 带 runId/环境，testsuite 数 = 流程数，testcase 数 = 总步骤数',
+  suiteJunit10.status === 200 &&
+    new RegExp(`<property name="suite\\.runId" value="${suiteDone10.id}"/>`).test(suiteJunit10.text) &&
+    /<property name="environment" value="[^"]+"/.test(suiteJunit10.text) &&
+    (suiteJunit10.text.match(/<testsuite /g) || []).length === 2 &&
+    (suiteJunit10.text.match(/<testcase/g) || []).length === suiteSteps10 &&
+    suiteJson10Body.kind === 'suite-run' &&
+    suiteJson10Body.executions.length === 2 &&
+    /流程结果/.test(suiteHtml10.text),
+  `suites=${(suiteJunit10.text.match(/<testsuite /g) || []).length} cases=${(suiteJunit10.text.match(/<testcase/g) || []).length} steps=${suiteSteps10}`
+)
+
+check(
+  '10.6 套件导出的三格式同样无明文泄漏',
+  [...leaks10(suiteJunit10.text), ...leaks10(suiteHtml10.text), ...leaks10(suiteJson10.text)].length === 0,
+  `leaks=${leaks10(suiteJunit10.text + suiteHtml10.text + suiteJson10.text).join(',') || 'none'}`
+)
+
+const badFormat10 = await fetchText(`/api/executions/${mainDetail10.id}/export?format=yaml`)
+const badSuiteFormat10 = await fetchText(`/api/suite-runs/${suiteDone10.id}/export?format=xml`)
+const missingExec10 = await fetchText('/api/executions/nope/export?format=json')
+const missingSuite10 = await fetchText('/api/suite-runs/nope/export?format=json')
+check(
+  '10.7 错误语义：非法格式 400 EXPORT_BAD_FORMAT，记录不存在 404 两种 code',
+  badFormat10.status === 400 &&
+    JSON.parse(badFormat10.text).code === 'EXPORT_BAD_FORMAT' &&
+    badSuiteFormat10.status === 400 &&
+    JSON.parse(badSuiteFormat10.text).code === 'EXPORT_BAD_FORMAT' &&
+    missingExec10.status === 404 &&
+    JSON.parse(missingExec10.text).code === 'EXECUTION_NOT_FOUND' &&
+    missingSuite10.status === 404 &&
+    JSON.parse(missingSuite10.text).code === 'SUITE_RUN_NOT_FOUND',
+  `bad=${badFormat10.status}/${JSON.parse(badFormat10.text).code} missing=${missingExec10.status}/${JSON.parse(missingExec10.text).code}`
+)
+
 // ---------------------------------------------------------------- 汇总
 console.log('\n结论')
 console.log('-'.repeat(78))
@@ -978,7 +1143,7 @@ for (const r of results) {
   console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  —  ${r.detail}` : ''}`)
 }
 console.log('-'.repeat(78))
-console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，9 个场景）`)
+console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，10 个场景）`)
 
 await new Promise((resolve) => appCtx.io.close(resolve))
 await new Promise((resolve) => appCtx.server.close(resolve))

@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { store } from '../store.js'
 import { sessions } from '../engine/registry.js'
 import { FAILURE_CLASSES, enrichExecutionDetail } from '../reporting/classify.js'
+import { EXPORT_FORMATS, normalizeFormat, renderExport } from '../reporting/export.js'
 
 const router = Router()
 
@@ -30,6 +31,33 @@ router.get('/', (req, res) => {
 
   if (flowId) list = list.filter((e) => e.flowId === flowId)
   res.json(list)
+})
+
+// 导出（M2-4）：JUnit XML / 单文件 HTML / JSON，统一先归类补齐再脱敏
+router.get('/:id/export', (req, res) => {
+  const format = normalizeFormat(req.query.format)
+  if (!format) {
+    return res.status(400).json({
+      error: `不支持的导出格式：${req.query.format}`,
+      code: 'EXPORT_BAD_FORMAT',
+      formats: EXPORT_FORMATS,
+    })
+  }
+  const detail = store.getExecutionDetail(req.params.id)
+  if (!detail) return res.status(404).json({ error: '执行记录不存在', code: 'EXECUTION_NOT_FOUND' })
+
+  // 与详情页同一份口径：老执行的归类读取时补齐后再导出
+  enrichExecutionDetail(detail)
+  const out = renderExport({
+    format,
+    kind: 'execution',
+    name: detail.flowName,
+    id: detail.id,
+    execution: detail,
+  })
+  res.setHeader('Content-Type', out.contentType)
+  res.setHeader('Content-Disposition', out.contentDisposition)
+  res.send(out.body)
 })
 
 // 执行详情（含步骤 / 校验结果 / 事件流）

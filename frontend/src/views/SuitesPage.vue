@@ -2,6 +2,8 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
+import type { ExportFormat } from '../api'
+import { saveBlob } from '../utils/download'
 import { getSocket } from '../stores/execution'
 import { failureLabel, failureTag } from '../constants/failure'
 
@@ -288,6 +290,24 @@ async function stopRun() {
   }
 }
 
+const exportingRun = ref(false)
+
+/** 套件导出（M2-4）：一次运行 = 一份报告，重试只取最后一次尝试 */
+async function exportRun(format: ExportFormat) {
+  if (!currentRun.value || exportingRun.value) return
+  exportingRun.value = true
+  const active = !isTerminal(currentRun.value)
+  try {
+    const { blob, filename } = await api.exportSuiteRun(currentRun.value.id, format)
+    saveBlob(blob, filename)
+    if (active) ElMessage.info('套件仍在执行，导出内容为当前快照')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.error || '导出失败')
+  } finally {
+    exportingRun.value = false
+  }
+}
+
 async function openHistory(row: any) {
   historySuite.value = row
   historyVisible.value = true
@@ -481,6 +501,16 @@ const runFlows = computed(() => currentRun.value?.summary?.flows || [])
           <span class="muted">run {{ currentRun.id?.slice(0, 8) }} · {{ fmt(currentRun.startedAt) }}</span>
           <span v-if="currentRun.envId" class="muted">环境 {{ currentRun.envId.slice(0, 8) }} v{{ currentRun.envVersion }}</span>
           <div class="run-head-spacer" />
+          <el-dropdown :disabled="exportingRun" @command="exportRun">
+            <el-button :loading="exportingRun" plain size="small">导出 ▾</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="html">HTML（单文件）</el-dropdown-item>
+                <el-dropdown-item command="junit">JUnit XML（进 CI）</el-dropdown-item>
+                <el-dropdown-item command="json">JSON</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-button v-if="runActive" type="danger" plain size="small" @click="stopRun">停止</el-button>
         </div>
 

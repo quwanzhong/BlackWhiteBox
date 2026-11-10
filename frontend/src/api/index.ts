@@ -1,8 +1,21 @@
 import axios from 'axios'
 import type { FlowDsl } from '../types/flow'
 import { getToken, resetToken } from '../security/token'
+import { filenameFromDisposition } from '../utils/download'
 
 const http = axios.create({ baseURL: '/api', timeout: 30000 })
+
+export type ExportFormat = 'junit' | 'html' | 'json'
+
+/** 导出下载：blob + 后端给出的文件名（M2-4） */
+function download(url: string, format: ExportFormat): Promise<{ blob: Blob; filename: string }> {
+  return http
+    .get(url, { params: { format }, responseType: 'blob' })
+    .then((r) => ({
+      blob: r.data as Blob,
+      filename: filenameFromDisposition(r.headers?.['content-disposition'] as string | undefined),
+    }))
+}
 
 // S3：每个请求带令牌（后端由 index.html 注入，无需用户输入）
 http.interceptors.request.use((config) => {
@@ -44,6 +57,7 @@ export const api = {
   listExecutions: (params?: { flowId?: string; failureClass?: string }): Promise<any[]> =>
     http.get('/executions', { params }).then((r) => r.data),
   getExecution: (id: string): Promise<any> => http.get(`/executions/${id}`).then((r) => r.data),
+  exportExecution: (id: string, format: ExportFormat) => download(`/executions/${id}/export`, format),
   pauseExecution: (id: string) => http.post(`/executions/${id}/pause`),
   resumeExecution: (id: string) => http.post(`/executions/${id}/resume`),
   stopExecution: (id: string) => http.post(`/executions/${id}/stop`),
@@ -117,6 +131,7 @@ export const api = {
   listSuiteRuns: (params?: { suiteId?: string; limit?: number }): Promise<any[]> =>
     http.get('/suite-runs', { params }).then((r) => r.data),
   getSuiteRun: (id: string): Promise<any> => http.get(`/suite-runs/${id}`).then((r) => r.data),
+  exportSuiteRun: (id: string, format: ExportFormat) => download(`/suite-runs/${id}/export`, format),
   stopSuiteRun: (id: string): Promise<any> => http.post(`/suite-runs/${id}/stop`).then((r) => r.data),
 
   // 缺陷

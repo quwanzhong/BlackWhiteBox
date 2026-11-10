@@ -3,6 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'v
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
+import type { ExportFormat } from '../api'
+import { saveBlob } from '../utils/download'
 import { useExecStore } from '../stores/execution'
 import { createGraph, renderFlow } from '../components/canvas/useCanvas'
 import ResultSummary from '../components/ResultSummary.vue'
@@ -55,6 +57,24 @@ const expandRows = computed(() => (detail.value?.steps || []).map((s: any) => s.
 const pretty = (v: any) => {
   if (v === undefined || v === null) return '—'
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+}
+
+// ---------- 导出（M2-4）：格式由后端决定，前端只负责下载 ----------
+const exporting = ref(false)
+
+async function exportAs(format: ExportFormat) {
+  if (!detail.value || exporting.value) return
+  exporting.value = true
+  const snapshot = ['running', 'paused', 'waiting'].includes(detail.value.status)
+  try {
+    const { blob, filename } = await api.exportExecution(detail.value.id, format)
+    saveBlob(blob, filename)
+    if (snapshot) ElMessage.info('执行尚未结束，导出内容为当前已落库步骤的快照')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.error || '导出失败')
+  } finally {
+    exporting.value = false
+  }
 }
 
 const statusTag = (s: string) =>
@@ -142,6 +162,16 @@ async function submitBug() {
         </div>
       </div>
       <div class="page-actions">
+        <el-dropdown :disabled="exporting" @command="exportAs">
+          <el-button :loading="exporting" plain>导出报告 ▾</el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="html">HTML（人看，单文件）</el-dropdown-item>
+              <el-dropdown-item command="junit">JUnit XML（进 CI）</el-dropdown-item>
+              <el-dropdown-item command="json">JSON（机器 / 回归 diff）</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-button @click="router.push('/reports')">返回列表</el-button>
         <el-button type="primary" plain @click="router.push(`/flows/${detail.flowId}`)">打开流程画布</el-button>
       </div>

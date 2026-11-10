@@ -37,6 +37,10 @@
 - **失败自动归类（M2-3）**：8 类可解释规则（网络不可达 / 超时 / 状态码不符 / 结构不符 / 断言不符 /
   前置依赖 / 脚本配置 / 人工驳回），执行时落库、老数据读取时补齐；报告列表与套件按归类筛选，
   失败原因取自主判证据且在密钥掩码之后生成，可直接复制到缺陷单。
+- **报告导出（M2-4）**：单条执行与整次套件运行都能导出 JUnit XML（进 Jenkins / GitLab CI）、
+  单文件 HTML（内联样式、零外链，直接发给别人看）与 JSON（回归 diff）；导出前统一脱敏——
+  请求头 / 响应头敏感键、URL 敏感参数、请求体敏感键一律 `***`，环境密钥明文永不出现，
+  响应体保留原样作为复盘证据。
 - **缺陷反馈**：报告失败步骤一键提缺陷，记录流程、请求、实际值 / 期望值与校验差异，支持状态流转与按项目筛选。
 - **Java 白盒分析器**：JDK 内置解析 API 实现，零第三方依赖，输出调用链 JSON 直接导入。
 
@@ -77,15 +81,15 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 
 ```bash
 npm run lint            # 后端 + 前端 eslint（--max-warnings=0）
-npm test                # 后端 node --test（86 个用例，快速反馈）
+npm test                # 后端 node --test（95 个用例，快速反馈）
 npm run test:coverage   # 同上 + 覆盖率门槛（行/分支/函数均 ≥70%）
-npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（92 项检查）
+npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（69 项检查）
 npm run ci              # lint → test:coverage → verify → build，与 GitHub Actions 同序
 ```
 
 覆盖率只统计核心模块（`engine`、`environments`、`suites`、`reporting`、`projects/scanner`、`infra/store`、`security`），
-当前为行 **95.98%** / 分支 **81.22%** / 函数 **95.87%**；路由与导入器等胶水层由
-`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 62 项 / 9 个场景）。
+当前本地（Windows）为行 **96.49%** / 分支 **79.62%** / 函数 **96.42%**；路由与导入器等胶水层由
+`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 69 项 / 10 个场景）。
 
 CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率门禁与场景验收，并断言构建产物
 `frontend/dist/index.html` 不含令牌占位符（生产令牌只能由后端在响应时注入）。
@@ -100,14 +104,15 @@ CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率�
 │       ├── components/        canvas（画布与节点）、节点编辑抽屉、步骤详情、结果汇总、目录选择器、日志控制台
 │       ├── stores/            执行状态仓库（Socket.IO 事件 → 动画状态）
 │       ├── constants/         失败归类枚举与中文标签（与后端同一份口径）
-│       ├── api/               后端接口封装
+│       ├── api/               后端接口封装（含导出下载）
+│       ├── utils/             文件名解析（Content-Disposition）与 blob 落盘
 │       └── styles/            发光动画与全局样式
 ├── backend/                   Node.js + Express + Socket.IO + axios
 │   └── src/
 │       ├── engine/            调度器、HTTP 执行器、校验器、JSONPath、并发队列、会话注册表
 │       ├── environments/      环境变量 / 全局 Header / secrets 解析与掩码
 │       ├── suites/            套件定义校验 + 进程内并发执行（重试 / failFast / stop）
-│       ├── reporting/         失败归类器（8 类规则，写入时落库、读取时补齐）
+│       ├── reporting/         失败归类器（8 类规则）+ 导出（JUnit/HTML/JSON）与 S8 脱敏
 │       ├── security/          访问令牌、Origin 白名单、目录沙箱、受限表达式求值器、AES-256-GCM 密钥库
 │       ├── infra/store/       SQLite 连接与迁移、执行行读写、JSON 一次性导入
 │       ├── apifox/            MCP 客户端（STDIO JSON-RPC）+ 文档还原 + 接口列表
@@ -231,8 +236,8 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 - [x] 环境变量 / 全局 Header / secrets 加密（M2-1）
 - [x] 套件 + 并发队列 + 重试 / failFast（M2-2）
 - [x] 失败自动归类 8 类 + 报告筛选（M2-3）
+- [x] 执行 / 套件导出 JUnit · HTML · JSON + 导出脱敏（M2-4）
 - [ ] 流程 DSL 版本化与导入校验
-- [ ] 套件级 JUnit / HTML / JSON 导出（M2-4）
 - [ ] 断言提取联动（把提取值直接回填到断言）
 - [ ] 定时执行 + 失败通知（企业微信 / 飞书）
 - [ ] 多用户与权限（推广期）
