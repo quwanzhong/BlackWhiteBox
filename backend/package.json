@@ -16,7 +16,7 @@
     "verify:scenes": "node scripts/verify-e2e-scenes.mjs",
     "verify:jacoco": "node scripts/verify-jacoco-local.mjs",
     "verify": "npm run verify:e2e && npm run verify:scenes",
-    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=src/engine/**/*.js --test-coverage-include=src/environments/**/*.js --test-coverage-include=src/suites/**/*.js --test-coverage-include=src/reporting/**/*.js --test-coverage-include=src/projects/scanner.js --test-coverage-include=src/infra/store/**/*.js --test-coverage-include=src/security/**/*.js --test-coverage-include=src/coverage/**/*.js --test-coverage-lines=70 --test-coverage-branches=70 --test-coverage-functions=70"
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=src/engine/**/*.js --test-coverage-include=src/environments/**/*.js --test-coverage-include=src/suites/**/*.js --test-coverage-include=src/reporting/**/*.js --test-coverage-include=src/projects/scanner.js --test-coverage-include=src/sources/**/*.js --test-coverage-include=src/infra/store/**/*.js --test-coverage-include=src/security/**/*.js --test-coverage-include=src/coverage/**/*.js --test-coverage-lines=70 --test-coverage-branches=70 --test-coverage-functions=70"
   },
   "dependencies": {
     "apifox-mcp-server": "^0.0.18",

@@ -16,6 +16,7 @@ import flowsRouter from './routes/flows.js'
 import executionsRouter from './routes/executions.js'
 import importRouter from './routes/import.js'
 import apifoxRouter from './routes/apifox.js'
+import sourcesRouter from './routes/sources.js'
 import projectsRouter from './routes/projects.js'
 import bugsRouter from './routes/bugs.js'
 import fsRouter from './routes/fs.js'
@@ -130,6 +131,7 @@ export function createApp({ token = loadOrCreateToken(), originPort = Number(pro
   app.use('/api/executions', executionsRouter)
   app.use('/api/import', importRouter)
   app.use('/api/apifox', apifoxRouter)
+  app.use('/api/sources', sourcesRouter)
   app.use('/api/projects', projectsRouter)
   app.use('/api/bugs', bugsRouter)
   app.use('/api/fs', fsRouter)

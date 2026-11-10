@@ -20,7 +20,7 @@ const router = Router()
 
 function fail(res, err) {
   const message = err?.message || '项目操作失败'
-  const userFixable = /请先|请填写|不存在|不在|没有|无法|至少|目录/.test(message)
+  const userFixable = /请先|请填写|不存在|不在|没有|无法|至少|目录|不支持/.test(message)
   res.status(userFixable ? 400 : 500).json({ error: message })
 }
 
@@ -113,10 +113,10 @@ router.post('/:id/pull', async (req, res) => {
 })
 
 // 保存项目需要的接口
-router.put('/:id/interfaces', (req, res) => {
+router.put('/:id/interfaces', async (req, res) => {
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids : []
-    const project = bindInterfaces(req.params.id, ids)
+    const project = await bindInterfaces(req.params.id, ids)
     res.json({ ...project, summary: summarize(project) })
   } catch (err) {
     fail(res, err)

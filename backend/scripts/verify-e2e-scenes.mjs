@@ -15,6 +15,8 @@
  *   场景 11 会话恢复：真实子进程执行 → 强杀 → 重启后按断点续跑 → 断线重放 after → 人工确认收尾
  *   场景 12 覆盖率取证：环境 settings.coverage → 每节点 reset/dump → 快照落库/投影/事件 →
  *          结束后 jacococli 分析（M3-2）→ agent/CLI/classfiles 缺失时降级且不伪装成 0%
+ *   场景 13 接口来源抽象：来源清单/未知来源/OpenAPI 拉取与校验 → Apifox 行为零变化（SRC-1）
+ *          → project.source=openapi 绑定/可用/列表（M3'-1）
  *
  * 环境与 verify-m1-3 同口径：临时库 + 真实端口 + token；Apifox 侧只依赖本机缓存文件
  * （oas-cache.json，MCP 拉取的产物格式），不依赖外网。
@@ -1858,6 +1860,112 @@ try {
   await agent12.close()
 }
 
+// ================================================================ 场景 13 · 接口来源抽象
+// M3'-1：Apifox 收编为适配器后必须「行为零变化」（SRC-1）；
+// OpenAPI 走同一契约，且 0 条接口不许假成功（SRC-3）。
+
+const sourcesList = await (await get('/api/sources')).json()
+const apifoxDesc = sourcesList.sources?.find((s) => s.kind === 'apifox')
+const openapiDesc = sourcesList.sources?.find((s) => s.kind === 'openapi')
+check(
+  '13.1 来源清单：apifox + openapi，configFields 可直接驱动表单（token 标 secret / spec 必填）',
+  sourcesList.sources?.length === 2 &&
+    apifoxDesc?.configFields?.find((f) => f.key === 'token')?.secret === true &&
+    openapiDesc?.configFields?.find((f) => f.key === 'spec')?.required === true,
+  (sourcesList.sources || []).map((s) => s.kind).join(',')
+)
+
+const unknownGet = await get('/api/sources/nope')
+const unknownPost = await post('/api/sources/nope/fetch', {})
+check(
+  '13.2 未知来源：GET/POST 均 400 SOURCE_UNKNOWN（不 500、不静默回退 apifox）',
+  unknownGet.status === 400 &&
+    (await unknownGet.json()).code === 'SOURCE_UNKNOWN' &&
+    unknownPost.status === 400 &&
+    (await unknownPost.json()).code === 'SOURCE_UNKNOWN',
+  `get=${unknownGet.status} post=${unknownPost.status}`
+)
+
+const openapiSpec = {
+  openapi: '3.0.0',
+  info: { title: '场景13 文档', version: '3.0.0' },
+  servers: [{ url: stubBase }],
+  paths: {
+    '/api/login': { get: { summary: '登录', 'x-apifox-folder': '用户' } },
+    '/api/orders': { get: { summary: '订单列表', 'x-apifox-folder': '订单' } },
+  },
+}
+const badDoc = await post('/api/sources/openapi/test', { spec: '{not-json' })
+const testedOpenapi = await (await post('/api/sources/openapi/test', { spec: openapiSpec })).json()
+check(
+  '13.3 OpenAPI test：坏 JSON → 400 SOURCE_BAD_DOCUMENT；正常文档 → 接口数正确',
+  badDoc.status === 400 &&
+    (await badDoc.json()).code === 'SOURCE_BAD_DOCUMENT' &&
+    testedOpenapi.ok === true &&
+    testedOpenapi.interfaceCount === 2,
+  `count=${testedOpenapi.interfaceCount}`
+)
+
+const fetchedOpenapi = await (await post('/api/sources/openapi/fetch', { spec: JSON.stringify(openapiSpec) })).json()
+const emptyDoc = await post('/api/sources/openapi/fetch', { spec: { openapi: '3.0.0', paths: {} } })
+check(
+  '13.4 OpenAPI fetch：JSON 字符串入参可用、返回统一 meta；0 条接口 → 400 SOURCE_EMPTY',
+  fetchedOpenapi.count === 2 &&
+    fetchedOpenapi.meta?.kind === 'openapi' &&
+    fetchedOpenapi.meta?.interfaceCount === 2 &&
+    fetchedOpenapi.meta?.sourceHash?.length === 16 &&
+    emptyDoc.status === 400 &&
+    (await emptyDoc.json()).code === 'SOURCE_EMPTY',
+  `count=${fetchedOpenapi.count} hash=${fetchedOpenapi.meta?.sourceHash}`
+)
+
+// SRC-1 回归：场景 3 的项目没有 apifox 配置，命中全局缓存时 pull/available 必须与重构前一致
+const apifoxAvailable = await (await get(`/api/projects/${project.id}/available`)).json()
+const apifoxPull = await (await post(`/api/projects/${project.id}/pull`, {})).json()
+check(
+  '13.5 SRC-1 回归：Apifox 项目 available/pull 仍走全局缓存，字段与重构前一致',
+  apifoxAvailable.source === 'cache' &&
+    apifoxAvailable.interfaces?.length === 3 &&
+    apifoxPull.fromCache === true &&
+    apifoxPull.interfaces?.length === 3 &&
+    apifoxPull.baseUrl === stubBase &&
+    typeof apifoxPull.fetchedAt === 'number',
+  `available=${apifoxAvailable.interfaces?.length} pull=${apifoxPull.interfaces?.length} base=${apifoxPull.baseUrl}`
+)
+
+// 新模型：project.source=openapi，spec 随项目配置存；绑定/可用/列表都走同一适配器
+const projectSpec = {
+  openapi: '3.0.0',
+  info: { title: '场景13 项目文档', version: '1.0.0' },
+  servers: [{ url: stubBase }],
+  paths: { '/api/env-echo': { get: { summary: '环境回显' } } },
+}
+const openapiProject = await (
+  await post('/api/projects', { name: '场景13 OpenAPI 项目', source: { kind: 'openapi', config: { spec: projectSpec } } })
+).json()
+const openapiBound = await (
+  await put(`/api/projects/${openapiProject.id}/interfaces`, { ids: ['GET /api/env-echo'] })
+).json()
+const openapiAvailable = await (await get(`/api/projects/${openapiProject.id}/available`)).json()
+const openapiSummary = (await (await get('/api/projects')).json()).find((p) => p.id === openapiProject.id)
+check(
+  '13.6 新模型：project.source=openapi 可绑定快照，available 只投影本项目文档，列表带 sourceKind',
+  openapiBound.interfaces?.length === 1 &&
+    openapiBound.interfaces[0]?.serverUrl === stubBase &&
+    openapiAvailable.interfaces?.length === 1 &&
+    openapiAvailable.interfaces[0]?.id === 'GET /api/env-echo' &&
+    openapiSummary?.sourceKind === 'openapi' &&
+    openapiSummary?.apifoxProjectId === '',
+  `bound=${openapiBound.interfaces?.length} available=${openapiAvailable.interfaces?.length} kind=${openapiSummary?.sourceKind}`
+)
+
+const badBind = await put(`/api/projects/${openapiProject.id}/interfaces`, { ids: ['GET /api/not-in-doc'] })
+check(
+  '13.7 绑定不存在的接口：400 且提示来源名称（不静默丢弃）',
+  badBind.status === 400 && /OpenAPI/.test((await badBind.json()).error || ''),
+  `status=${badBind.status}`
+)
+
 // ---------------------------------------------------------------- 汇总
 console.log('\n结论')
 console.log('-'.repeat(78))
@@ -1867,7 +1975,7 @@ for (const r of results) {
   console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  —  ${r.detail}` : ''}`)
 }
 console.log('-'.repeat(78))
-console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，12 个场景）`)
+console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，13 个场景）`)
 
 await new Promise((resolve) => appCtx.io.close(resolve))
 await new Promise((resolve) => appCtx.server.close(resolve))

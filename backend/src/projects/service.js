@@ -9,33 +9,54 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { store } from '../store.js'
-import {
-  describeInterfaces,
-  fetchInterfaces,
-  getCachedInterfaces,
-  readCache,
-  resolveConnection,
-  saveConfig,
-} from '../apifox/service.js'
+import { normalizeSourceConfig } from '../sources/contract.js'
+import { createSource } from '../sources/registry.js'
 import { analyzeProject, buildGroups } from './scanner.js'
 
 function clean(value) {
   return String(value ?? '').trim()
 }
 
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** 旧模型字段（project.apifox）——迁移期双写的镜像，前端老字段仍然可用 */
+function apifoxMirror(input = {}) {
+  return {
+    projectId: clean(input.projectId),
+    siteId: clean(input.siteId),
+    branchId: clean(input.branchId),
+    apiBaseUrl: clean(input.apiBaseUrl),
+  }
+}
+
+/**
+ * 项目来源配置（M3'-1）：
+ *   新模型 project.source { kind, config }，旧模型 project.apifox 保留为镜像。
+ *   - 请求里带 source → 以 source 为准；apifox 来源时同步写镜像
+ *   - 请求里只带 apifox → 写入镜像，并把 source 指向 apifox（保证读路径一致）
+ */
+function sourceFrom(input = {}) {
+  if (isPlainObject(input.source) && input.source.kind) {
+    const kind = clean(input.source.kind)
+    const config = isPlainObject(input.source.config) ? { ...input.source.config } : {}
+    return { kind, config }
+  }
+  return { kind: 'apifox', config: apifoxMirror(input.apifox) }
+}
+
 function emptyProject(input = {}) {
+  const source = sourceFrom(input)
+  const apifox = source.kind === 'apifox' ? apifoxMirror(source.config) : apifoxMirror(input.apifox)
   return {
     id: input.id || crypto.randomUUID(),
     name: clean(input.name) || '未命名项目',
     description: clean(input.description),
     codePath: clean(input.codePath),
     serviceBaseUrl: clean(input.serviceBaseUrl).replace(/\/$/, ''),
-    apifox: {
-      projectId: clean(input.apifox?.projectId),
-      siteId: clean(input.apifox?.siteId),
-      branchId: clean(input.apifox?.branchId),
-      apiBaseUrl: clean(input.apifox?.apiBaseUrl),
-    },
+    source,
+    apifox,
     interfaceIds: [],
     interfaces: [],
     scan: null,
@@ -49,12 +70,15 @@ function normalizeProject(input, existing) {
   if (input.codePath !== undefined) base.codePath = clean(input.codePath)
   if (input.serviceBaseUrl !== undefined) base.serviceBaseUrl = clean(input.serviceBaseUrl).replace(/\/$/, '')
   if (input.apifox) {
-    base.apifox = {
-      projectId: clean(input.apifox.projectId ?? base.apifox?.projectId),
-      siteId: clean(input.apifox.siteId ?? base.apifox?.siteId),
-      branchId: clean(input.apifox.branchId ?? base.apifox?.branchId),
-      apiBaseUrl: clean(input.apifox.apiBaseUrl ?? base.apifox?.apiBaseUrl),
-    }
+    base.apifox = apifoxMirror({ ...(base.apifox || {}), ...input.apifox })
+    if ((base.source?.kind || 'apifox') === 'apifox') base.source = { kind: 'apifox', config: { ...base.apifox } }
+  }
+  if (isPlainObject(input.source) && input.source.kind) {
+    const kind = clean(input.source.kind)
+    const config = isPlainObject(input.source.config) ? { ...input.source.config } : {}
+    base.source = { kind, config }
+    // apifox 镜像只服务于旧前端字段：切到其它来源时清空，避免「openapi 项目仍显示 apifoxProjectId」
+    base.apifox = kind === 'apifox' ? apifoxMirror(config) : apifoxMirror({})
   }
   return base
 }
@@ -63,12 +87,14 @@ function normalizeProject(input, existing) {
 export function summarize(project) {
   const scan = project.scan || null
   const folders = [...new Set((project.interfaces || []).map((it) => it.folder).filter(Boolean))]
+  const source = normalizeSourceConfig(project)
   return {
     id: project.id,
     name: project.name,
     description: project.description,
     codePath: project.codePath,
     serviceBaseUrl: project.serviceBaseUrl,
+    sourceKind: source.kind,
     apifoxProjectId: project.apifox?.projectId || '',
     interfaceCount: project.interfaceIds?.length || 0,
     folders,
@@ -113,57 +139,36 @@ export function deleteProject(id) {
 }
 
 // ---------------------------------------------------------------------------
-// Apifox 接口绑定
+// 接口来源绑定（M3'-1：Apifox / OpenAPI / 后续 Postman 走同一入口）
 // ---------------------------------------------------------------------------
 
 /**
- * 全局单例连接：请求参数 → 全局配置 → 内存令牌。
- * 项目不再维护自己的 Apifox 连接，避免黑盒 / 白盒各自拉取。
+ * project → 来源适配器 + 归一化配置。
+ * 读时兼容旧模型（project.apifox），所以历史项目不需要迁移数据。
  */
-function connectionFor(input = {}) {
-  return resolveConnection(input)
+function sourceFor(project) {
+  const { kind, config } = normalizeSourceConfig(project)
+  return { source: createSource(kind), kind, config }
 }
 
 /**
  * 拉取项目可用接口。
- * 所有项目共用同一份全局 Apifox 连接与文档缓存。
+ * 所有项目共用同一份全局连接/文档缓存（Apifox 侧语义由适配器保证）。
+ * 返回值是适配器结果的透传：apifox 路径与重构前字段完全一致（SRC-1）。
  */
 export async function pullProjectInterfaces(id, input = {}) {
   const project = store.getProject(id)
   if (!project) throw new Error('项目不存在')
-  const connection = connectionFor(input)
-
-  if (!connection.projectId && !connection.siteId) {
-    const cached = getCachedInterfaces()
-    if (cached) return { ...cached, fromCache: true }
-    throw new Error('请先在「数据导入」页完成全局 Apifox 连接（项目 ID + 访问令牌）')
-  }
-
-  if (!connection.token) {
-    const cached = readCache()
-    const sameProject = cached && (!connection.projectId || cached.projectId === connection.projectId)
-    if (sameProject && input.refresh !== true) {
-      return { ...getCachedInterfaces(), fromCache: true }
-    }
-  }
-
-  const result = await fetchInterfaces(connection, { refresh: input.refresh !== false })
-  // 连接标识回写全局配置，保持全站单例；令牌仍然只留在进程内存
-  saveConfig({
-    projectId: connection.projectId,
-    siteId: connection.siteId,
-    branchId: connection.branchId,
-    baseUrl: connection.baseUrl,
-    token: input.token !== undefined ? connection.token : undefined,
-  })
-  return { ...result, fromCache: false }
+  const { source, config } = sourceFor(project)
+  return source.fetch({ ...config, ...input }, { refresh: input.refresh })
 }
 
-/** 读取当前可用接口：优先全局本机缓存，其次项目已绑定快照 */
+/** 读取当前可用接口：优先来源缓存，其次项目已绑定快照 */
 export function availableInterfaces(id) {
   const project = store.getProject(id)
   if (!project) throw new Error('项目不存在')
-  const cached = getCachedInterfaces()
+  const { source, config } = sourceFor(project)
+  const cached = typeof source.cached === 'function' ? source.cached(config) : null
   if (cached) return { ...cached, source: 'cache' }
   if (project.interfaces?.length) {
     return {
@@ -195,15 +200,17 @@ function recalcScan(scan, interfaces) {
 }
 
 /** 保存项目需要的接口（记录 ID + 完整元数据快照） */
-export function bindInterfaces(id, ids = []) {
+export async function bindInterfaces(id, ids = []) {
   const project = store.getProject(id)
   if (!project) throw new Error('项目不存在')
   const uniqueIds = [...new Set((ids || []).map(clean).filter(Boolean))]
   const known = new Map((project.interfaces || []).map((it) => [it.id, it]))
-  const cache = readCache()
+  const { source, kind, config } = sourceFor(project)
 
   let described = []
-  if (cache?.spec && uniqueIds.length) described = describeInterfaces(cache.spec, uniqueIds)
+  if (uniqueIds.length && typeof source.snapshot === 'function') {
+    described = await source.snapshot(uniqueIds, config)
+  }
   const describedMap = new Map(described.map((it) => [it.id, it]))
 
   const interfaces = []
@@ -214,7 +221,9 @@ export function bindInterfaces(id, ids = []) {
     else missing.push(iid)
   }
   if (missing.length) {
-    throw new Error(`以下接口不在当前 Apifox 缓存中，请先重新拉取接口：${missing.slice(0, 5).join('、')}`)
+    // Apifox 文案保持不变（前端/文档里有引用）；其它来源用 label 生成同类提示
+    const where = kind === 'apifox' ? '当前 Apifox 缓存' : `${source.describe().label} 的最近一次拉取结果`
+    throw new Error(`以下接口不在${where}中，请先重新拉取接口：${missing.slice(0, 5).join('、')}`)
   }
 
   project.interfaceIds = interfaces.map((it) => it.id)
@@ -230,7 +239,10 @@ export function bindInterfaces(id, ids = []) {
 export function scanProject(id, input = {}) {
   const project = store.getProject(id)
   if (!project) throw new Error('项目不存在')
-  if (!project.interfaces?.length) throw new Error('请先绑定该项目的 Apifox 接口')
+  if (!project.interfaces?.length) {
+    const { kind } = sourceFor(project)
+    throw new Error(kind === 'apifox' ? '请先绑定该项目的 Apifox 接口' : '请先绑定该项目的接口')
+  }
 
   const root = clean(input.codePath) || project.codePath
   if (!root) throw new Error('请填写前端工程目录（绝对路径）')

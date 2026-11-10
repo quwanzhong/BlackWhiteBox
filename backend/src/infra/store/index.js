@@ -134,16 +134,16 @@ export function createStore(db) {
     // ---------- 项目 ----------
     listProjects: db.prepare('SELECT data_json FROM projects ORDER BY rowid DESC'),
     listProjectSummaries: db.prepare(`
-      SELECT id, name, description, code_path, service_base_url, apifox_project_id,
+      SELECT id, name, description, code_path, service_base_url, apifox_project_id, source_kind,
              interface_count, folders_json, scan_summary_json, created_at, updated_at
       FROM projects ORDER BY rowid DESC
     `),
     getProject: db.prepare('SELECT data_json FROM projects WHERE id = ?'),
     saveProject: db.prepare(`
-      INSERT INTO projects (id, name, description, code_path, service_base_url, apifox_project_id,
+      INSERT INTO projects (id, name, description, code_path, service_base_url, apifox_project_id, source_kind,
                             interface_count, folders_json, scan_summary_json, data_json,
                             created_at, updated_at)
-      VALUES (@id, @name, @description, @codePath, @serviceBaseUrl, @apifoxProjectId,
+      VALUES (@id, @name, @description, @codePath, @serviceBaseUrl, @apifoxProjectId, @sourceKind,
               @interfaceCount, @foldersJson, @scanSummaryJson, @dataJson, @createdAt, @updatedAt)
       ON CONFLICT(id) DO UPDATE SET
         name              = excluded.name,
@@ -151,6 +151,7 @@ export function createStore(db) {
         code_path         = excluded.code_path,
         service_base_url  = excluded.service_base_url,
         apifox_project_id = excluded.apifox_project_id,
+        source_kind       = excluded.source_kind,
         interface_count   = excluded.interface_count,
         folders_json      = excluded.folders_json,
         scan_summary_json = excluded.scan_summary_json,
@@ -719,6 +720,7 @@ export function createStore(db) {
         codePath: row.code_path || '',
         serviceBaseUrl: row.service_base_url || '',
         apifoxProjectId: row.apifox_project_id || '',
+        sourceKind: row.source_kind || 'apifox',
         interfaceCount: row.interface_count || 0,
         folders: parse(row.folders_json, []),
         scan: parse(row.scan_summary_json, null),
@@ -742,6 +744,7 @@ export function createStore(db) {
         codePath: project.codePath || '',
         serviceBaseUrl: project.serviceBaseUrl || '',
         apifoxProjectId: project.apifox?.projectId || '',
+        sourceKind: project.source?.kind || 'apifox',
         interfaceCount: project.interfaceIds?.length || 0,
         foldersJson: JSON.stringify(foldersOf(interfaces)),
         scanSummaryJson: project.scan ? JSON.stringify(scanSummaryOf(project.scan)) : null,

@@ -147,8 +147,8 @@ test('老库升级：M1-1 的 detail_json 自动展开为 context + 行，幂等
   // 2) 正常打开：应当自动跑 002 并把 detail_json 展开成行
   const db = openDatabase(file)
   try {
-    // 打开即跑到最新迁移（M3-1 新增 007_coverage.sql）
-    assert.equal(db.pragma('user_version', { simple: true }), 7)
+    // 打开即跑到最新迁移（M3'-1 新增 008_project_source_kind.sql）
+    assert.equal(db.pragma('user_version', { simple: true }), 8)
     const store = createStore(db)
     const detail = store.getExecutionDetail('e-old')
 

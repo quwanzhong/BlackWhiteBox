@@ -11,16 +11,25 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DATA_DIR } from '../config.js'
-import { parseOpenApi, sampleBody } from '../importers/openapi.js'
+import { parseOpenApi } from '../importers/openapi.js'
+import {
+  countInterfaces,
+  describeInterfaces,
+  extractInterfaces,
+  filterSpec,
+  isPlainObject,
+} from '../sources/openapi/projector.js'
 import { ApifoxMcpClient, pickTool } from './mcpClient.js'
+
+// M3'-1：投影逻辑已收编到 sources/openapi/projector.js（与 openapi 适配器同源），
+// 这里保持原有导出面不变，调用方（routes/apifox.js、projects/service.js）零改动。
+export { describeInterfaces, extractInterfaces, filterSpec }
 
 const APIFOX_DIR = path.join(DATA_DIR, 'apifox')
 const CONFIG_FILE = path.join(DATA_DIR, 'apifox-config.json')
 const CACHE_FILE = path.join(APIFOX_DIR, 'oas-cache.json')
 
 let runtimeToken = process.env.APIFOX_ACCESS_TOKEN || ''
-
-const METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
 
 function readJson(file, fallback) {
   try {
@@ -93,10 +102,6 @@ export function resolveConnection(input = {}) {
 // ---------------------------------------------------------------------------
 // OpenAPI 还原（$ref 内联）
 // ---------------------------------------------------------------------------
-
-function isPlainObject(v) {
-  return Boolean(v) && typeof v === 'object' && !Array.isArray(v)
-}
 
 /** 收集指向 MCP 缓存文件的 $ref（形如 /paths/xxx.json） */
 function collectFileRefs(node, loaded, out = new Set(), chain = new Set()) {
@@ -209,15 +214,6 @@ function readOriginalFromCache(connection) {
   }
 }
 
-function countInterfaces(spec) {
-  let count = 0
-  for (const item of Object.values(spec.paths || {})) {
-    if (!isPlainObject(item)) continue
-    for (const method of METHODS) if (item[method]) count++
-  }
-  return count
-}
-
 /**
  * 通过 MCP 拉取 OpenAPI。
  * @param {object} connection resolveConnection() 的结果
@@ -319,94 +315,6 @@ export function getCachedInterfaces() {
 // ---------------------------------------------------------------------------
 // 接口列表 / 流程生成
 // ---------------------------------------------------------------------------
-
-export function extractInterfaces(spec) {
-  const list = []
-  for (const [apiPath, item] of Object.entries(spec.paths || {})) {
-    if (!isPlainObject(item)) continue
-    for (const method of METHODS) {
-      const op = item[method]
-      if (!isPlainObject(op)) continue
-      list.push({
-        id: `${method.toUpperCase()} ${apiPath}`,
-        method: method.toUpperCase(),
-        path: apiPath,
-        name: op.summary || op.operationId || `${method.toUpperCase()} ${apiPath}`,
-        operationId: op.operationId || '',
-        folder: op['x-apifox-folder'] || item['x-apifox-folder'] || '',
-        status: op['x-apifox-status'] || item['x-apifox-status'] || '',
-        tags: Array.isArray(op.tags) ? op.tags : [],
-        deprecated: Boolean(op.deprecated),
-      })
-    }
-  }
-  return list
-}
-
-function paramMeta(list) {
-  return (Array.isArray(list) ? list : [])
-    .filter((p) => p && p.name)
-    .map((p) => ({
-      name: p.name,
-      in: p.in,
-      required: Boolean(p.required),
-      type: p.schema?.type || '',
-      example: p.example ?? p.schema?.example ?? p.schema?.default ?? '',
-      description: p.description || '',
-    }))
-}
-
-/**
- * 把选中的接口展开成「可脱离文档缓存使用」的完整元数据。
- * 项目绑定接口时存一份快照，后续扫描与生成流程都不再依赖 Apifox 缓存。
- */
-export function describeInterfaces(spec, ids) {
-  const wanted = new Set(ids)
-  const serverUrl = spec.servers?.[0]?.url || ''
-  const result = []
-  for (const [apiPath, item] of Object.entries(spec.paths || {})) {
-    if (!isPlainObject(item)) continue
-    for (const method of METHODS) {
-      const op = item[method]
-      if (!isPlainObject(op)) continue
-      const id = `${method.toUpperCase()} ${apiPath}`
-      if (!wanted.has(id)) continue
-      const params = paramMeta([...(item.parameters || []), ...(op.parameters || [])])
-      result.push({
-        id,
-        method: method.toUpperCase(),
-        path: apiPath,
-        name: op.summary || op.operationId || id,
-        operationId: op.operationId || '',
-        folder: op['x-apifox-folder'] || item['x-apifox-folder'] || '',
-        status: op['x-apifox-status'] || item['x-apifox-status'] || '',
-        tags: Array.isArray(op.tags) ? op.tags : [],
-        deprecated: Boolean(op.deprecated),
-        summary: op.summary || '',
-        serverUrl,
-        pathParams: params.filter((p) => p.in === 'path'),
-        queryParams: params.filter((p) => p.in === 'query'),
-        bodySample: sampleBody(op),
-      })
-    }
-  }
-  return result
-}
-
-export function filterSpec(spec, ids) {
-  const selected = new Set(ids)
-  const paths = {}
-  for (const [apiPath, item] of Object.entries(spec.paths || {})) {
-    if (!isPlainObject(item)) continue
-    for (const method of METHODS) {
-      if (!item[method]) continue
-      if (!selected.has(`${method.toUpperCase()} ${apiPath}`)) continue
-      if (!paths[apiPath]) paths[apiPath] = {}
-      paths[apiPath][method] = item[method]
-    }
-  }
-  return { ...spec, paths }
-}
 
 /** 把选中的接口转换成黑盒流程 DSL（复用 OpenAPI 导入器） */
 export function buildFlow(spec, ids, name, baseUrl) {
