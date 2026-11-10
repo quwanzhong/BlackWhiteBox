@@ -12,7 +12,8 @@
     "lint": "npm run lint --prefix backend && npm run lint --prefix frontend",
     "test": "npm run test --prefix backend",
     "test:coverage": "npm run test:coverage --prefix backend",
-    "ci": "npm run lint && npm run test:coverage && npm run build"
+    "verify": "npm run verify --prefix backend",
+    "ci": "npm run lint && npm run test:coverage && npm run verify && npm run build"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

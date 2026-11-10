@@ -12,6 +12,9 @@
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
     "test": "node --test",
+    "verify:e2e": "node scripts/verify-e2e-flow.mjs",
+    "verify:scenes": "node scripts/verify-e2e-scenes.mjs",
+    "verify": "npm run verify:e2e && npm run verify:scenes",
     "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=src/engine/**/*.js --test-coverage-include=src/projects/scanner.js --test-coverage-include=src/infra/store/**/*.js --test-coverage-include=src/security/**/*.js --test-coverage-lines=70 --test-coverage-branches=70 --test-coverage-functions=70"
   },
   "dependencies": {
@@ -25,6 +28,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "eslint": "^9.39.4",
-    "globals": "^17.14.0"
+    "globals": "^17.14.0",
+    "socket.io-client": "^4.8.4"
   }
 }

@@ -70,16 +70,17 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 
 ```bash
 npm run lint            # 后端 + 前端 eslint（--max-warnings=0）
-npm test                # 后端 node --test（59 个用例，快速反馈）
+npm test                # 后端 node --test（61 个用例，快速反馈）
 npm run test:coverage   # 同上 + 覆盖率门槛（行/分支/函数均 ≥70%）
-npm run ci              # lint → test:coverage → build，与 GitHub Actions 同序
+npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（65 项检查）
+npm run ci              # lint → test:coverage → verify → build，与 GitHub Actions 同序
 ```
 
 覆盖率只统计核心模块（`engine`、`projects/scanner`、`infra/store`、`security`），
-当前为行 **96.36%** / 分支 **79.20%** / 函数 **95.50%**；路由与导入器等胶水层由
-`backend/scripts/verify-m1-*.mjs` 对真实库副本做端到端回归。
+当前为行 **96.25%** / 分支 **79.40%** / 函数 **95.52%**；路由与导入器等胶水层由
+`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 35 项）。
 
-CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint 与覆盖率门禁，并断言构建产物
+CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率门禁与场景验收，并断言构建产物
 `frontend/dist/index.html` 不含令牌占位符（生产令牌只能由后端在响应时注入）。
 
 ### 目录

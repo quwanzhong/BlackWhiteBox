@@ -16,7 +16,7 @@ function normalizeBug(input, existing) {
     executionId: String(input.executionId ?? base.executionId ?? ''),
     nodeId: String(input.nodeId ?? base.nodeId ?? ''),
     stepName: String(input.stepName ?? base.stepName ?? ''),
-    title: String(input.title ?? base.title ?? '未命名缺陷').trim() || '未命名缺陷',
+    title: String(input.title ?? base.title ?? '').trim() || base.title || '',
     description: String(input.description ?? base.description ?? ''),
     severity: SEVERITIES.includes(input.severity) ? input.severity : base.severity || 'major',
     status: STATUSES.includes(input.status) ? input.status : base.status || 'open',

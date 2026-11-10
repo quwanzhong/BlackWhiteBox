@@ -188,6 +188,30 @@ test('调度器：事件攒批达到 20 条立即落库，不足 20 条由定时
   assert.equal(session.pendingEvents.length, 0, '定时器应在 200ms 后刷盘')
 })
 
+test('调度器：manual_wait 广播瞬间点确认也不丢（waiter 先于广播注册）', async () => {
+  const { RunSession } = await import('../src/engine/scheduler.js')
+  let session = null
+  let accepted = null
+  const immediateConfirm = {
+    to: () => ({
+      emit: (_name, evt) => {
+        if (evt?.type === 'manual_wait') {
+          // 模拟用户/前端在收到推送的同一刻点「确认」：此时 waiter 必须已注册
+          accepted = session.confirmManual(evt.payload.nodeId, true, '秒点确认')
+        }
+      },
+    }),
+  }
+
+  session = new RunSession(manualFlow('f-manual-race'), immediateConfirm)
+  await session.start()
+
+  assert.equal(accepted, true, '广播时刻的确认必须被接收，而不是静默返回 false')
+  assert.equal(session.status, 'passed')
+  assert.equal(session.steps[0].actual.confirmed, true)
+  assert.equal(session.steps[0].actual.note, '秒点确认')
+})
+
 test('调度器：步骤通过但输出不匹配时 summary 给出对应文案', async () => {
   const { RunSession } = await import('../src/engine/scheduler.js')
   const session = new RunSession(

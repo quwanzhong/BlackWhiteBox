@@ -32,6 +32,10 @@ function makeFixture() {
       '/*',
       " * axios.get('/api/block-comment')",
       ' */',
+      '/*',
+      "axios.get('/api/block-raw')",
+      '*/',
+      "axios.get('/api/after-block') // 行尾注释也不算调用",
       'export function getOrder(id: string) {',
       '  return service.get(`/api/orders/${id}`)',
       '}',
@@ -163,11 +167,13 @@ test('扫描器：scanDirectory 识别 axios/fetch/对象写法，跳过注释�
   assert.ok(byPath.has('GET /api/method'), '类方法归属')
   assert.equal(byPath.get('GET /api/method').functionName, 'detail')
   assert.ok(byPath.has('GET /api/keep'), '超长行跳过但正常行保留')
+  assert.ok(byPath.has('GET /api/after-block'), '块注释结束后同文件的调用照常识别')
 
   // 应被忽略的写法
   for (const p of [
     '/api/commented-out',
     '/api/block-comment',
+    '/api/block-raw',
     '/api/trace',
     '/api/too-long',
     '/api/orphan-call',
@@ -313,7 +319,7 @@ test('扫描器：analyzeProject 串起扫描、匹配、分组与统计', () =>
   const report = analyzeProject(ROOT, interfaces)
   assert.equal(report.root, path.resolve(ROOT))
   assert.equal(report.scannedFiles, 5)
-  assert.equal(report.callCount, 9)
+  assert.equal(report.callCount, 10)
   assert.equal(report.matchedCalls + report.unmatchedCalls, report.callCount)
   assert.equal(report.matchRate, Math.round((report.matchedCalls / report.callCount) * 100))
   assert.ok(report.matchedInterfaces > 0)

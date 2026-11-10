@@ -246,6 +246,9 @@ export class RunSession {
       if ((node.action?.type || 'http') === 'manual') {
         // 白盒 / 人工步骤：暂停等待测试人员确认
         step.status = 'waiting'
+        // 先注册 waiter 再落库/广播：客户端一旦看到 waiting 或收到 manual_wait，
+        // 立刻点「确认」也必须能命中（否则确认丢失、会话悬停）
+        const confirmed = this.waitManual(nodeId)
         this.saveStep(step)
         this.persist()
         this.emit('manual_wait', {
@@ -254,7 +257,7 @@ export class RunSession {
           hint: node.action?.hint || '请人工确认该步骤的执行结果',
         })
         this.log(`⏸ 等待人工确认：${node.name}`, 'warn')
-        const { pass, note } = await this.waitManual(nodeId)
+        const { pass, note } = await confirmed
         step.actual = { manual: true, confirmed: !!pass, note: note || '' }
         step.checks = {
           matched: !!pass,

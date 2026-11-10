@@ -104,8 +104,71 @@ function isComment(line) {
   return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')
 }
 
+/**
+ * 去掉注释后的代码行（行数不变）。
+ *
+ * 只按行首判断注释是不够的：`/*` 之后不带 `*` 前缀的行（以及行尾 `//`）里，
+ * 被注释掉的调用会被误判成真实调用，进而拉低匹配率、多出「未匹配」分组、
+ * 生成带幽灵节点的流程。这里按字符走一遍状态机：
+ *  - 字符串字面量整体保留（`'https://host/x'` 里的 `//` 不是注释）
+ *  - 块注释跨行，直到块注释结束标记
+ *  - 行注释截断到行尾
+ */
+function stripCommentLines(lines) {
+  const out = []
+  let inBlock = false
+  for (const line of lines) {
+    let code = ''
+    let i = 0
+    while (i < line.length) {
+      if (inBlock) {
+        const end = line.indexOf('*/', i)
+        if (end === -1) {
+          i = line.length
+          break
+        }
+        inBlock = false
+        i = end + 2
+        continue
+      }
+      const ch = line[i]
+      if (ch === '"' || ch === "'" || ch === '`') {
+        const quote = ch
+        code += ch
+        i += 1
+        while (i < line.length) {
+          code += line[i]
+          if (line[i] === '\\') {
+            i += 1
+            if (i < line.length) code += line[i]
+            i += 1
+            continue
+          }
+          if (line[i] === quote) {
+            i += 1
+            break
+          }
+          i += 1
+        }
+        continue
+      }
+      if (ch === '/' && line[i + 1] === '/') break
+      if (ch === '/' && line[i + 1] === '*') {
+        inBlock = true
+        i += 2
+        continue
+      }
+      code += ch
+      i += 1
+    }
+    out.push(code)
+  }
+  return out
+}
+
 function collectCallsInFile(content, relFile, root) {
   const lines = content.split(/\r?\n/)
+  const codeLines = stripCommentLines(lines)
   const calls = []
   const seen = new Set()
 
@@ -126,14 +189,14 @@ function collectCallsInFile(content, relFile, root) {
       path: normalized,
       file: relFile,
       line: index + 1,
-      functionName: functionNameAt(lines, index),
+      functionName: functionNameAt(codeLines, index),
       kind,
       snippet: line.trim().slice(0, 240),
     })
   }
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
+    const line = codeLines[i]
     if (!line || line.length > 2000) continue
 
     // 1) axios.get('/x') / service.post(`/x/${id}`) / request({...})
@@ -147,7 +210,7 @@ function collectCallsInFile(content, relFile, root) {
     // 2) fetch('/x', { method: 'POST' })
     const fetchRe = /\bfetch\s*\(\s*(['"`])([^'"`\n]+)\1/gi
     while ((m = fetchRe.exec(line))) {
-      const lookahead = lines.slice(i, i + 8).join(' ')
+      const lookahead = codeLines.slice(i, i + 8).join(' ')
       const mm = lookahead.match(/\bmethod\s*:\s*(['"`])([A-Za-z]+)\1/)
       push(i, mm ? mm[2] : 'GET', m[2], 'fetch')
     }
@@ -155,7 +218,7 @@ function collectCallsInFile(content, relFile, root) {
     // 3) axios({ url: '/x', method: 'post' }) / request({ url: ... })
     const urlRe = /\burl\s*:\s*(['"`])([^'"`\n]+)\1/gi
     while ((m = urlRe.exec(line))) {
-      const windowText = lines.slice(Math.max(0, i - 8), i + 8).join(' ')
+      const windowText = codeLines.slice(Math.max(0, i - 8), i + 8).join(' ')
       if (!/\b(axios|request|http|service|api|instance|client|fetch)\s*\(/.test(windowText)) continue
       const sameLine = line.match(/\bmethod\s*:\s*(['"`])([A-Za-z]+)\1/)
       const nearby = windowText.match(/\bmethod\s*:\s*(['"`])([A-Za-z]+)\1/)
