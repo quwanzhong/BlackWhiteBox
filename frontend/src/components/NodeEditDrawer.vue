@@ -2,6 +2,7 @@
 import { reactive, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { FlowNode } from '../types/flow'
+import { parseCoverageTargets } from '../utils/coverage'
 
 const props = defineProps<{ modelValue: boolean; node: any }>()
 const emit = defineEmits<{
@@ -13,6 +14,7 @@ const form = reactive<any>({
   id: '', name: '', actionType: 'http', method: 'GET', url: '', timeout: 15000,
   headersText: '', bodyText: '', hint: '', inputText: '',
   expectedStatus: 200, checks: [] as any[], extractRows: [] as any[],
+  mustHitText: '', mustMissText: '',
   position: { x: 100, y: 100 },
 })
 
@@ -29,6 +31,8 @@ function resetForm(n: any) {
   form.inputText = n.input ? JSON.stringify(n.input, null, 2) : ''
   form.expectedStatus = n.expected?.status ?? 200
   form.checks = JSON.parse(JSON.stringify(n.expected?.checks || []))
+  form.mustHitText = (n.expected?.coverage?.mustHit || []).join('\n')
+  form.mustMissText = (n.expected?.coverage?.mustMiss || []).join('\n')
   form.extractRows = Object.entries(n.extract || {}).map(([name, path]) => ({ name, path }))
   form.position = n.position || { x: 100, y: 100 }
 }
@@ -76,6 +80,25 @@ function confirm() {
     if (row.name && row.path) extract[row.name] = row.path
   }
 
+  const mustHit = parseCoverageTargets(form.mustHitText)
+  const mustMiss = parseCoverageTargets(form.mustMissText)
+  const expected: NonNullable<FlowNode['expected']> = {
+    status: Number(form.expectedStatus) || 200,
+    checks: form.checks.map((c: any) => ({
+      type: c.type || 'json_path',
+      label: c.label || '',
+      path: c.path || '',
+      op: c.op || 'eq',
+      value: parseValueInput(c.value),
+    })),
+  }
+  // 只在 HTTP 节点、且确实填了目标时写 coverage，避免给黑盒节点留下空壳字段
+  if (form.actionType === 'http' && (mustHit.length || mustMiss.length)) {
+    expected.coverage = {}
+    if (mustHit.length) expected.coverage.mustHit = mustHit
+    if (mustMiss.length) expected.coverage.mustMiss = mustMiss
+  }
+
   const node: FlowNode = {
     id: form.id,
     name: form.name.trim(),
@@ -91,16 +114,7 @@ function confirm() {
             timeout: Number(form.timeout) || 15000,
           },
     input,
-    expected: {
-      status: Number(form.expectedStatus) || 200,
-      checks: form.checks.map((c: any) => ({
-        type: c.type || 'json_path',
-        label: c.label || '',
-        path: c.path || '',
-        op: c.op || 'eq',
-        value: parseValueInput(c.value),
-      })),
-    },
+    expected,
     extract,
     position: form.position,
   }
@@ -183,6 +197,27 @@ function confirm() {
               <el-button size="small" type="danger" plain @click="removeCheck(i)">删</el-button>
             </div>
             <el-button size="small" @click="addCheck">＋ 添加断言</el-button>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="覆盖率断言">
+          <div style="width: 100%">
+            <div style="font-size: 12px; color: #909399; margin-bottom: 4px">
+              目标写法：<code>pkg.Class</code> 或 <code>pkg.Class#method</code>，每行一个；需要环境配置 JaCoCo 采集与 classfiles
+            </div>
+            <el-input
+              v-model="form.mustHitText"
+              type="textarea"
+              :rows="2"
+              placeholder="必须命中，例如：com.demo.OrderService#create"
+            />
+            <el-input
+              v-model="form.mustMissText"
+              type="textarea"
+              :rows="2"
+              style="margin-top: 6px"
+              placeholder="必须未命中，例如：com.demo.PaymentClient#refund"
+            />
           </div>
         </el-form-item>
       </template>

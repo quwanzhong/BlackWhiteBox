@@ -9,7 +9,9 @@
  *   3) .exec 能被 jacococli 解析成 XML（即 M3-2 的输入是合法文件）；
  *   4) CoverageAnalyzer 真跑 jacococli：临时 SQLite 写入真 .exec → run() →
  *      result_json 的 totals/files 与 XML 直接统计一致，原始 blob 不被改写；
- *   5) 幂等：analysis 完成后再次 run() 不重复消费，行不会被二次改写。
+ *   5) 幂等：analysis 完成后再次 run() 不重复消费，行不会被二次改写；
+ *   6) M3-4 白盒断言：用真报告判定 mustHit / mustMiss，验证「A 上库存方法未命中、
+ *      B 上订单类未命中」这种跨节点归因（假 agent 无法证明）。
  *
  * 前置：poc/jacoco/tools/*.jar 与 poc/jacoco/out/classes 已就绪
  * （见 poc/jacoco/README.md §3，jar 与产物都在 .gitignore 内，所以不能进 CI）。
@@ -33,6 +35,7 @@ process.env.HEIBAIHE_TOKEN = 'verify-jacoco-token-0123456789abcdef'
 
 const { JacocoClient, probeAgent } = await import('../src/coverage/jacoco-client.js')
 const { CoverageAnalyzer } = await import('../src/coverage/analyzer.js')
+const { evaluateCoverageAssertions } = await import('../src/coverage/assertions.js')
 const { store } = await import('../src/store.js')
 const { closeDefaultDatabase } = await import('../src/infra/store/db.js')
 
@@ -261,6 +264,72 @@ try {
       again.analyzed === 0 &&
       JSON.stringify(rowAfter.result) === resultBefore,
     `again=${again.reason} blobA=${blobAfterA.length}B blobB=${blobAfterB.length}B`
+  )
+
+  // ---------------- M3-4：真数据上的白盒断言（mustHit / mustMiss）
+  // 复用节点内同步分析路径：行已 analyzed，analyzeOne 应直接返回结果而不是重跑 jacococli。
+  const reuseA = await analyzer.analyzeOne(rowA.id)
+  const reuseB = await analyzer.analyzeOne(rowB.id)
+  const summaryOf = (checks) =>
+    checks.map((c) => `${c.passed ? 'PASS' : 'FAIL'} ${c.type}:${c.path}`).join(' | ')
+
+  const okOnA = evaluateCoverageAssertions(
+    {
+      coverage: {
+        mustHit: ['com.poc.order.OrderService', 'com.poc.order.OrderService#create'],
+        mustMiss: ['com.poc.order.OrderRepository#bindCoupon'],
+      },
+    },
+    reuseA
+  )
+  check(
+    '10. 真数据断言（订单节点）：类/方法级 mustHit 命中、未调用的 bindCoupon mustMiss 通过，且复用已分析结果',
+    reuseA.status === 'analyzed' &&
+      reuseA.reason === 'ALREADY_ANALYZED' &&
+      reuseB.status === 'analyzed' &&
+      okOnA.length === 3 &&
+      okOnA.every((c) => c.passed && c.type === 'coverage'),
+    summaryOf(okOnA)
+  )
+
+  // 跨节点归因：A 上的库存方法必须判「未命中」，B 上的订单类必须判「未命中」；
+  // 反过来 mustMiss 也不能放过真实命中（A 上 create 命中 ⇒ 期望不命中失败）。
+  const missOnA = evaluateCoverageAssertions(
+    { coverage: { mustHit: ['com.poc.stock.StockService#deduct'] } },
+    reuseA
+  )
+  const badMissOnA = evaluateCoverageAssertions(
+    { coverage: { mustMiss: ['com.poc.order.OrderService#create'] } },
+    reuseA
+  )
+  const okOnB = evaluateCoverageAssertions(
+    {
+      coverage: {
+        mustHit: ['com.poc.stock.StockService#deduct'],
+        mustMiss: ['com.poc.order.OrderService'],
+      },
+    },
+    reuseB
+  )
+  const missOnB = evaluateCoverageAssertions(
+    { coverage: { mustHit: ['com.poc.order.OrderService#create'] } },
+    reuseB
+  )
+  check(
+    '11. 真数据断言跨节点归因：A 上库存方法 mustHit 失败、create mustMiss 失败；B 上库存命中且订单类未命中',
+    missOnA.length === 1 &&
+      !missOnA[0].passed &&
+      missOnA[0].type === 'coverage' &&
+      /期望命中/.test(missOnA[0].message) &&
+      badMissOnA.length === 1 &&
+      !badMissOnA[0].passed &&
+      /期望不命中/.test(badMissOnA[0].message) &&
+      okOnB.length === 2 &&
+      okOnB.every((c) => c.passed) &&
+      missOnB.length === 1 &&
+      !missOnB[0].passed &&
+      /期望命中/.test(missOnB[0].message),
+    `${summaryOf(missOnA)} || ${summaryOf(okOnB)}`
   )
 
 } finally {

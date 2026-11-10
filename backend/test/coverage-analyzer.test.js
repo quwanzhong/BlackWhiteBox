@@ -271,3 +271,93 @@ test('analyzer：未配置覆盖率直接返回 disabled，不查库不报错', 
   assert.equal(summary.reason, 'COVERAGE_DISABLED')
   assert.equal(summary.total, 0)
 })
+
+test('analyzeOne：节点内同步分析单条证据，已分析直接复用，不重复跑 jacococli', async () => {
+  const executionId = 'exec-one'
+  const row = store.saveCoverage({ executionId, nodeId: 'n1', execBlob: Buffer.from([5, 5]) })
+  let runs = 0
+  const analyzer = new CoverageAnalyzer({
+    executionId,
+    settings: { coverage: { classfiles: DIR } },
+    runner: async () => {
+      runs += 1
+      return { result: RESULT }
+    },
+  })
+
+  const first = await analyzer.analyzeOne(row.id)
+  assert.equal(first.status, 'analyzed')
+  assert.deepEqual(first.result.totals, RESULT.totals)
+  assert.equal(runs, 1)
+  assert.equal(store.getCoverage(row.id).status, 'analyzed')
+  assert.equal(store.getCoverage(row.id).error, null)
+
+  const again = await analyzer.analyzeOne(row.id)
+  assert.equal(again.status, 'analyzed')
+  assert.equal(again.reason, 'ALREADY_ANALYZED')
+  assert.equal(runs, 1)
+
+  // run() 不会再把它当 captured 候选
+  const summary = await analyzer.run()
+  assert.equal(summary.total, 0)
+  assert.equal(summary.reason, 'NO_PENDING_EVIDENCE')
+  assert.equal(runs, 1)
+})
+
+test('analyzeOne：pending / analysis_failed / unavailable / disabled 都有稳定状态', async () => {
+  const executionId = 'exec-one-states'
+  const pendingRow = store.saveCoverage({ executionId, nodeId: 'n1', execBlob: Buffer.from([1]) })
+  const failRow = store.saveCoverage({ executionId, nodeId: 'n2', execBlob: Buffer.from([2]) })
+  store.saveCoverage({ executionId, nodeId: 'n3', status: 'unavailable', error: 'COVERAGE_AGENT_UNREACHABLE: x' })
+
+  const pending = await new CoverageAnalyzer({ executionId, settings: { coverage: {} } }).analyzeOne(pendingRow.id)
+  assert.equal(pending.status, 'pending')
+  assert.equal(pending.reason, 'CLASSFILES_NOT_CONFIGURED')
+  assert.equal(store.getCoverage(pendingRow.id).status, 'captured')
+
+  const failing = new CoverageAnalyzer({
+    executionId,
+    settings: { coverage: { classfiles: DIR } },
+    runner: async () => {
+      throw new CoverageAnalysisError('COVERAGE_ANALYZE_FAILED', 'boom')
+    },
+  })
+  const failed = await failing.analyzeOne(failRow.id)
+  assert.equal(failed.status, 'analysis_failed')
+  assert.match(failed.error, /^COVERAGE_ANALYZE_FAILED: boom/)
+  assert.equal(store.getCoverage(failRow.id).status, 'captured')
+  assert.ok(store.getCoverage(failRow.id).analyzedAt > 0)
+
+  const missing = await failing.analyzeOne('no-such-coverage-id')
+  assert.equal(missing.status, 'unavailable')
+  assert.equal(missing.error, 'COVERAGE_NOT_FOUND')
+
+  const unavailable = await failing.analyzeOne(store.listExecutionCoverage(executionId).find((row) => row.nodeId === 'n3').id)
+  assert.equal(unavailable.status, 'unavailable')
+  assert.match(unavailable.error, /AGENT_UNREACHABLE/)
+
+  const disabled = await new CoverageAnalyzer({ executionId: 'exec-one-off' }).analyzeOne('whatever')
+  assert.equal(disabled.status, 'disabled')
+})
+
+test('analyzer.run({skipIds})：跳过节点内已同步分析过的行', async () => {
+  const executionId = 'exec-skip'
+  const keep = store.saveCoverage({ executionId, nodeId: 'n1', execBlob: Buffer.from([1]) })
+  const skip = store.saveCoverage({ executionId, nodeId: 'n2', execBlob: Buffer.from([2]) })
+  let runs = 0
+  const analyzer = new CoverageAnalyzer({
+    executionId,
+    settings: { coverage: { classfiles: DIR } },
+    runner: async () => {
+      runs += 1
+      return { result: RESULT }
+    },
+  })
+
+  const summary = await analyzer.run({ skipIds: new Set([skip.id]) })
+  assert.equal(summary.total, 1)
+  assert.equal(summary.analyzed, 1)
+  assert.equal(runs, 1)
+  assert.equal(store.getCoverage(skip.id).status, 'captured')
+  assert.equal(store.getCoverage(keep.id).status, 'analyzed')
+})

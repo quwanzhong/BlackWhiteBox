@@ -1811,6 +1811,49 @@ try {
       (await ghostExec12.json()).code === 'EXECUTION_NOT_FOUND',
     `notAnalyzed=${notAnalyzed12.status} ghostNode=${ghostNode12.status} noSource=${noSource12.status} ghostExec=${ghostExec12.status}`
   )
+  // 12.14 M3-4 白盒断言：有 mustHit 但没有 classfiles（无法映射源码行）。
+  // 断言不能静默通过：节点判 failed、failureClass=script、check.type=coverage_evidence，
+  // 而覆盖率证据本身仍是 captured+pending（没有分析失败，也没有伪装成已分析）。
+  const flow12c = await (
+    await post('/api/flows', {
+      name: '场景12 白盒断言缺证据',
+      type: 'whitebox',
+      projectId: project.id,
+      nodes: [
+        {
+          id: 'n1',
+          name: '订单接口（应命中 OrderService）',
+          action: { type: 'http', method: 'GET', url: `${stubBase}/api/orders` },
+          expected: {
+            status: 200,
+            checks: [],
+            coverage: { mustHit: ['com.poc.OrderService#create'] },
+          },
+        },
+      ],
+      edges: [],
+    })
+  ).json()
+  const run12c = await (await post(`/api/flows/${flow12c.id}/run`, { environmentId: env12.id })).json()
+  const detail12c = await waitDone(run12c.executionId)
+  const cov12c = await (await get(`/api/executions/${run12c.executionId}/coverage`)).json()
+  const step12c = detail12c.steps[0]
+  const evidence12c = (step12c?.checks?.results || []).find((c) => c.type === 'coverage_evidence')
+  check(
+    '12.14 白盒断言缺 classfiles：failed + failureClass=script + coverage_evidence，证据保持 pending 不伪装通过',
+    detail12c.status === 'failed' &&
+      step12c?.status === 'failed' &&
+      step12c?.failureClass === 'script' &&
+      evidence12c &&
+      evidence12c.passed === false &&
+      /classfiles/.test(evidence12c.message || '') &&
+      cov12c.count === 1 &&
+      cov12c.pending === 1 &&
+      cov12c.analyzed === 0 &&
+      cov12c.analysisFailed === 0 &&
+      !detail12c.events.some((e) => e.type === 'coverage.analyzed'),
+    `status=${detail12c.status} class=${step12c?.failureClass} pending=${cov12c.pending}`
+  )
 } finally {
   await agent12.close()
 }

@@ -2,11 +2,17 @@ export type FlowType = 'blackbox' | 'whitebox'
 export type NodeStatus = 'pending' | 'running' | 'waiting' | 'passed' | 'failed' | 'skipped'
 
 export interface FlowCheck {
-  type?: 'json_path' | 'body_contains'
+  type?: 'json_path' | 'body_contains' | 'schema' | 'coverage' | 'coverage_evidence'
   label?: string
   path?: string
   op?: string
   value?: any
+}
+
+/** M3-4：白盒覆盖率断言（目标写法 pkg.Class 或 pkg.Class#method） */
+export interface CoverageAssertions {
+  mustHit?: string[]
+  mustMiss?: string[]
 }
 
 export interface FlowAction {
@@ -30,6 +36,8 @@ export interface FlowNode {
     checks?: FlowCheck[]
     maxDurationMs?: number
     manualNote?: string
+    /** M3-4：白盒覆盖率断言；只在 HTTP 节点生效 */
+    coverage?: CoverageAssertions
   }
   extract?: Record<string, string>
   position?: { x: number; y: number }

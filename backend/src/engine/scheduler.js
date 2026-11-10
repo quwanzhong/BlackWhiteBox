@@ -9,6 +9,10 @@ import { maskDeep } from '../environments/service.js'
 import { classifyStep, classifyExecution } from '../reporting/classify.js'
 import { createCoverageCollector } from '../coverage/collector.js'
 import { createCoverageAnalyzer } from '../coverage/analyzer.js'
+import {
+  hasCoverageAssertions,
+  evaluateCoverageAssertions,
+} from '../coverage/assertions.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -98,6 +102,9 @@ export class RunSession {
         executionId: this.executionId,
         settings: opts.environment?.settings,
       })
+    // M3-4：节点内已同步分析过的证据行。异步 run() 跳过它们，避免
+    // 「步骤已判失败、徽标却被异步重试刷成已分析」这种结论不一致。
+    this.syncedCoverage = new Set()
     if (Number.isInteger(opts.startedAt)) this.startedAt = opts.startedAt
     if (opts.resume) this.applyResume(opts.resume)
   }
@@ -489,6 +496,7 @@ export class RunSession {
           ],
         }
         step.status = pass ? 'passed' : 'failed'
+        this.rejectManualCoverageAssertions(node, step)
       } else {
         // M3-1：节点前 reset、节点后 dumpAndReset；采集失败只降级，不影响节点结论。
         // collector 本身已吞异常，这里再兜一层：观测能力绝不能把执行带崩。
@@ -553,6 +561,8 @@ export class RunSession {
               pending: coverage.pending,
             })
           }
+          // M3-4：声明了白盒断言的节点在此同步分析 + 判定（未声明则保持异步分析）
+          await this.applyCoverageAssertions(node, step)
         }
       }
     } catch (err) {
@@ -600,6 +610,108 @@ export class RunSession {
     // M2-5：节点边界 = 恢复点。此时「已执行」已含当前节点、ready 由下一轮循环刷新
     this.saveResume()
     return step.status === 'passed'
+  }
+
+  /**
+   * M3-4：把覆盖率断言结果并进节点的 checks。
+   * 失败只能把节点从 passed 拉到 failed，不能反向「洗白」已失败的节点。
+   */
+  mergeCoverageChecks(step, checks) {
+    if (!checks.length) return
+    const results = [...(step.checks?.results || []), ...checks]
+    const allPassed = results.every((c) => c.passed)
+    // 只有原本就通过、且断言全绿才算 matched；请求抛错等「无 checks」的失败不会被洗白
+    step.checks = { matched: allPassed && step.status === 'passed', results }
+    if (!allPassed) step.status = 'failed'
+  }
+
+  /**
+   * M3-4：节点内白盒判定。
+   * 只有声明了 `expected.coverage` 才同步分析——未声明断言的节点保持原来的异步分析，
+   * 不增加正常黑盒执行的延迟。
+   *
+   * 证据不可用也判失败（`coverage_evidence`），绝不静默通过：
+   * 用户既然声明了「应命中 X」，就不能在没跑分析时把结论当通过。
+   */
+  async applyCoverageAssertions(node, step) {
+    if (!hasCoverageAssertions(node.expected)) return null
+    const startedAt = Date.now()
+    let analysis
+    if (step.coverageId) {
+      try {
+        analysis = await this.coverageAnalyzer.analyzeOne(step.coverageId)
+      } catch (err) {
+        // analyzeOne 自身已收敛异常；这里兜底，观测能力不能带崩执行
+        analysis = {
+          status: 'unavailable',
+          reason: 'ANALYZE_ERROR',
+          error: err?.message || String(err),
+          result: null,
+        }
+      }
+      if (analysis.status === 'analyzed' || analysis.status === 'analysis_failed') {
+        // 同步判定过的行不再交给 finish() 的异步重试
+        this.syncedCoverage.add(step.coverageId)
+        step.coverage = {
+          ...(step.coverage || {}),
+          status: analysis.status === 'analyzed' ? 'analyzed' : 'captured',
+          error: analysis.error || null,
+          pending: false,
+        }
+        this.emitCoverageAnalyzed({
+          executionId: this.executionId,
+          analyzed: analysis.status === 'analyzed' ? 1 : 0,
+          failed: analysis.status === 'analysis_failed' ? 1 : 0,
+          skipped: 0,
+          total: 1,
+          durationMs: Date.now() - startedAt,
+          results: [
+            {
+              coverageId: step.coverageId,
+              nodeId: step.nodeId,
+              status: analysis.status,
+              covered: analysis.result?.totals?.covered,
+              missed: analysis.result?.totals?.missed,
+              total: analysis.result?.totals?.total,
+              lineRate: analysis.result?.totals?.lineRate,
+              files: analysis.result?.totals?.files,
+              classes: analysis.result?.totals?.classes,
+              error: analysis.error || null,
+            },
+          ],
+        })
+      }
+    } else {
+      // 没有证据行：要么没配采集，要么采集器在 begin 阶段就没拿到配置
+      analysis = {
+        status: 'disabled',
+        reason: 'NO_EVIDENCE_ROW',
+        error: step.coverage?.error || null,
+        result: null,
+      }
+    }
+    this.mergeCoverageChecks(step, evaluateCoverageAssertions(node.expected, analysis))
+    return analysis
+  }
+
+  /**
+   * M3-4：人工节点不采集覆盖率——声明了断言就必须判失败，
+   * 不能因为「人工点了通过」就把未验证的白盒断言当成通过。
+   */
+  rejectManualCoverageAssertions(node, step) {
+    if (!hasCoverageAssertions(node.expected)) return
+    this.mergeCoverageChecks(step, [
+      {
+        type: 'coverage_evidence',
+        label: '覆盖率断言',
+        path: '',
+        op: 'exists',
+        value: true,
+        actual: '人工节点',
+        passed: false,
+        message: '人工节点不支持覆盖率断言：覆盖率证据只在 HTTP 节点按 reset/dump 采集',
+      },
+    ])
   }
 
   /**
@@ -725,7 +837,7 @@ export class RunSession {
   analyzeCoverage() {
     if (!this.coverageAnalyzer?.run) return Promise.resolve(null)
     return Promise.resolve()
-      .then(() => this.coverageAnalyzer.run())
+      .then(() => this.coverageAnalyzer.run({ skipIds: this.syncedCoverage }))
       .then((summary) => {
         // classfiles 未配置 / 没有待分析证据时不发事件：行继续显示 pending=true
         if (summary && summary.total > 0 && !summary.reason) {

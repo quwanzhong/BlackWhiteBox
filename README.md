@@ -57,6 +57,10 @@
 - **覆盖率面板（M3-3）**：画布节点右上角显示 `covered/total` 徽标（无证据 / 待分析 / 分析失败 / 无行数据各自可辨），
   点徽标或右侧「查看未覆盖行 / 源码」打开面板：文件按未覆盖行排序，源码命中绿、未覆盖红，自动定位第一处未覆盖行，
   支持前后跳转与复制 `path:line`。源码只允许读本节点分析结果里声明过的相对路径（`realpath` 防软链接逃逸，单文件上限 512 KB）。
+- **白盒断言（M3-4）**：节点在「理想输出」里声明 `coverage.mustHit` / `coverage.mustMiss`（`pkg.Class` 或
+  `pkg.Class#method`），执行到该节点时同步分析本节点 `.exec` 立即判定：应命中未命中、或不应命中却命中 → 节点
+  failed 且归类 `assertion`；没采集 / 没配 `classfiles` / 分析失败 / 人工节点声明断言 → failed 且归类 `script`
+  （配置问题），并给出可读原因。**绝不把「没跑到分析」当通过**；未声明断言的节点仍走异步分析，不增加执行延迟。
 - **缺陷反馈**：报告失败步骤一键提缺陷，记录流程、请求、实际值 / 期望值与校验差异，支持状态流转与按项目筛选。
 - **Java 白盒分析器**：JDK 内置解析 API 实现，零第三方依赖，输出调用链 JSON 直接导入。
 
@@ -97,20 +101,20 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 
 ```bash
 npm run lint            # 后端 + 前端 eslint（--max-warnings=0）
-npm test                # 后端 node --test（127 个用例，快速反馈）
-npm run test:frontend   # 前端 node --test（事件同步 + 覆盖率视图模型，11 个用例）
+npm test                # 后端 node --test（161 个用例，快速反馈）
+npm run test:frontend   # 前端 node --test（事件同步 + 覆盖率视图模型，12 个用例）
 npm run test:coverage   # 同上 + 覆盖率门槛（行/分支/函数均 ≥70%）
-npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（87 项检查 / 12 场景）
+npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（88 项检查 / 12 场景）
 npm run verify:jacoco   # 可选：真实 JaCoCo agent 复核（需本地 JDK 17 + poc/jacoco 产物，不在 CI 跑）
 npm run ci              # lint → test:coverage → test:frontend → verify → build，与 GitHub Actions 同序
 ```
 
 覆盖率只统计核心模块（`engine`、`environments`、`suites`、`reporting`、`projects/scanner`、`infra/store`、`security`、`coverage`），
-CI（ubuntu-latest）为行 **96.21%** / 分支 **81.03%** / 函数 **94.49%**（本地 Windows 96.25% / 81.03% / 94.49%）；路由与导入器等胶水层由
-`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 31 项 + 功能域 87 项 / 12 个场景）。
+本地 Windows 为行 **96.32%** / 分支 **81.64%** / 函数 **94.67%**；路由与导入器等胶水层由
+`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 31 项 + 功能域 88 项 / 12 个场景）。
 
 CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑后端 lint、覆盖率门禁与场景验收，前端 lint → `npm run test`
-（事件同步 5 例 + 覆盖率视图模型 6 例）→ build，并断言构建产物 `frontend/dist/index.html` 不含令牌占位符
+（事件同步 5 例 + 覆盖率视图模型 7 例）→ build，并断言构建产物 `frontend/dist/index.html` 不含令牌占位符
 （生产令牌只能由后端在响应时注入）。最近一次：run `42794184969`（sha `4040c94`）success，
 后端 **144/144**、行 **96.21%** / 分支 **81.03%** / 函数 **94.49%**。
 
@@ -261,8 +265,7 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 - [x] 覆盖率取证：每节点 JaCoCo `.exec` 快照 + 聚合投影 API + 无证据降级（M3-1）
 - [x] 覆盖率解析：jacococli 逐节点分析 + 行级 `covered/missed` + `coverage.analyzed`（M3-2）
 - [x] 覆盖率面板：节点徽标 / 文件未覆盖行 / 源码跳转与复制位置（M3-3）
-- [ ] 白盒断言：`mustHit` / `mustMiss`（M3-4）
-- [ ] 白盒断言 `mustHit` / `mustMiss`（M3-4）
+- [x] 白盒断言：`mustHit` / `mustMiss`，节点内同步判定，证据不可用也判失败不静默通过（M3-4）
 - [ ] 流程 DSL 版本化与导入校验
 - [ ] 断言提取联动（把提取值直接回填到断言）
 - [ ] 定时执行 + 失败通知（企业微信 / 飞书）

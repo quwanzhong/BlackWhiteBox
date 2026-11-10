@@ -14,6 +14,7 @@ import {
   firstUncovered,
   fmtPct,
   mergeCoverageEvent,
+  parseCoverageTargets,
   rateTone,
   stepUncovered,
   summarizeCoverage,
@@ -107,6 +108,16 @@ test('firstUncovered / stepUncovered：源码打开定位与未覆盖行前后�
   assert.equal(stepUncovered(missed, 12, -1), 8)
   assert.equal(stepUncovered(missed, 1, -1), 12)
   assert.equal(stepUncovered([], 5, 1), null)
+})
+
+test('parseCoverageTargets：多行目标去空行、去重、保序，非字符串返回空数组', () => {
+  assert.deepEqual(
+    parseCoverageTargets('com.demo.OrderService#create\r\n\r\n  com.demo.OrderRepository  \ncom.demo.OrderService#create\n'),
+    ['com.demo.OrderService#create', 'com.demo.OrderRepository']
+  )
+  assert.deepEqual(parseCoverageTargets(''), [])
+  assert.deepEqual(parseCoverageTargets(null), [])
+  assert.deepEqual(parseCoverageTargets(['com.demo.A']), [])
 })
 
 test('mergeCoverageEvent：dump 更新状态但保留已解析 result，新节点追加', () => {

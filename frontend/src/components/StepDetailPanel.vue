@@ -86,6 +86,17 @@ const statusText: Record<string, string> = {
           </div>
         </div>
         <div v-else class="muted">未配置额外断言，仅校验状态码</div>
+        <div v-if="node.expected?.coverage" style="margin-top: 6px">
+          <div class="sp-kv">白盒覆盖率断言（需配置 JaCoCo 采集 + classfiles）：</div>
+          <div v-for="(t, i) in node.expected.coverage.mustHit || []" :key="'hit-' + i" class="sp-check-row">
+            <el-tag size="small" type="success" effect="plain">应命中</el-tag>
+            <code>{{ t }}</code>
+          </div>
+          <div v-for="(t, i) in node.expected.coverage.mustMiss || []" :key="'miss-' + i" class="sp-check-row">
+            <el-tag size="small" type="warning" effect="plain">应未命中</el-tag>
+            <code>{{ t }}</code>
+          </div>
+        </div>
       </template>
       <template v-else>
         <div class="sp-kv">{{ node.expected?.manualNote || '人工确认代码逻辑符合预期' }}</div>

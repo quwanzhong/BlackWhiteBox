@@ -164,6 +164,23 @@ export function stepUncovered(missed: number[] = [], current: number, direction:
 }
 
 /**
+ * M3-4：把节点编辑框里的多行覆盖率断言目标归一化。
+ * 去空行/首尾空白、去重、保序；目标合法性由后端判定（前端不做第二套规则）。
+ */
+export function parseCoverageTargets(raw: unknown): string[] {
+  if (typeof raw !== 'string') return []
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const line of raw.split(/\r?\n/)) {
+    const text = line.trim()
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    out.push(text)
+  }
+  return out
+}
+
+/**
  * `coverage.dump` 增量：只更新证据状态，保留已解析的 result。
  * 同节点覆盖写（M3-1 契约：一次执行每节点一份快照）。
  */

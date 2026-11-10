@@ -51,6 +51,9 @@ const CHECK_CLASS = {
   json_schema: 'schema',
   body_schema: 'schema',
   manual: 'manual_reject',
+  // M3-4：覆盖率断言不符是「断言」问题；证据不可用/配置错误是「脚本/环境」问题
+  coverage: 'assertion',
+  coverage_evidence: 'script',
 }
 
 /**

@@ -227,17 +227,95 @@ export class CoverageAnalyzer {
   }
 
   /**
+   * 分析单条覆盖率证据（M3-4：白盒断言需要在节点内同步拿到结果）。
+   *
+   * 永不抛出，返回调用方可以直接用来判定的状态：
+   *   analyzed        —— result 可用
+   *   pending         —— 有证据但未配置 classfiles（保持 captured，等待以后重跑）
+   *   analysis_failed —— jacococli 失败（保留证据 + 稳定 error）
+   *   skipped         —— 空 blob 或行状态不是 captured
+   *   unavailable     —— 本节点没有证据行
+   *   disabled        —— 本次执行未启用覆盖率采集
+   *
+   * `workDir` 由 `run()` 复用；不传时自己建临时目录并在结束时清理。
+   * @param {string|{id?: string}} rowOrId coverage 行或 id
+   * @param {{workDir?: string}} [opts]
+   */
+  async analyzeRow(rowOrId, { workDir } = {}) {
+    if (!this.config || this.config.source !== 'jacoco') {
+      return { status: 'disabled', reason: 'COVERAGE_DISABLED', error: null, result: null }
+    }
+    const id = typeof rowOrId === 'string' ? rowOrId : rowOrId?.id
+    const full = id ? store.getCoverage(id) : null
+    if (!full) {
+      return { status: 'unavailable', reason: 'NO_EVIDENCE', error: 'COVERAGE_NOT_FOUND', result: null }
+    }
+    // 已分析过的行直接复用结果：白盒断言重复判定时不重复跑 jacococli
+    if (full.status === 'analyzed' && full.result) {
+      return { status: 'analyzed', reason: 'ALREADY_ANALYZED', error: full.error || null, result: full.result }
+    }
+    if (full.status === 'unavailable') {
+      return { status: 'unavailable', reason: 'NO_EVIDENCE', error: full.error || null, result: null }
+    }
+    if (full.status !== 'captured') {
+      return { status: 'skipped', reason: 'NOT_CAPTURED', error: full.error || null, result: null }
+    }
+    if (!this.config.classfiles) {
+      return { status: 'pending', reason: 'CLASSFILES_NOT_CONFIGURED', error: null, result: null }
+    }
+    if (!full.execBlob?.length) {
+      return { status: 'skipped', reason: 'EMPTY_EVIDENCE', error: full.error || null, result: null }
+    }
+
+    const ownWorkDir = !workDir
+    const dir = workDir || fs.mkdtempSync(path.join(this.tmpRoot || os.tmpdir(), 'hbh-coverage-'))
+    try {
+      const execFile = path.join(dir, `${full.id}.exec`)
+      const xmlFile = path.join(dir, `${full.id}.xml`)
+      fs.writeFileSync(execFile, full.execBlob)
+      try {
+        const { result } = await this.runner({
+          execFile,
+          xmlFile,
+          classfiles: this.config.classfiles,
+          sourcefiles: this.config.sourcefiles,
+          cliPath: this.config.cliPath,
+          javaBin: this.config.javaBin,
+          timeoutMs: this.timeoutMs,
+        })
+        store.updateCoverageResult(full.id, { status: 'analyzed', result, error: null })
+        return { status: 'analyzed', reason: null, error: null, result }
+      } catch (err) {
+        const error = stableError(err)
+        store.updateCoverageResult(full.id, { status: 'captured', result: null, error })
+        return { status: 'analysis_failed', reason: 'ANALYZE_FAILED', error, result: null }
+      }
+    } finally {
+      if (ownWorkDir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+    }
+  }
+
+  /** M3-4：节点内同步分析一条证据，供白盒断言立即判定 */
+  analyzeOne(coverageId) {
+    return this.analyzeRow(coverageId)
+  }
+
+  /**
    * 分析本次执行的所有 `status='captured'` 快照。
    * 永不抛出：单节点失败只写该行 error，继续下一个节点；返回汇总供事件使用。
+   * @param {{skipIds?: Set<string>|string[]}} [opts] M3-4：已在节点内同步分析过的行不再重跑
    */
-  async run() {
+  async run({ skipIds } = {}) {
     const startedAt = Date.now()
     if (!this.config || this.config.source !== 'jacoco') {
       return this.summary({ reason: 'COVERAGE_DISABLED', startedAt })
     }
 
+    const skip = skipIds instanceof Set ? skipIds : new Set(skipIds || [])
     const rows = store.listExecutionCoverage(this.executionId)
-    const candidates = rows.filter((row) => row.status === 'captured' && row.source === 'jacoco')
+    const candidates = rows.filter(
+      (row) => row.status === 'captured' && row.source === 'jacoco' && !skip.has(row.id)
+    )
     if (!candidates.length) return this.summary({ reason: 'NO_PENDING_EVIDENCE', startedAt })
     if (!this.config.classfiles) {
       return this.summary({ reason: 'CLASSFILES_NOT_CONFIGURED', total: candidates.length, skipped: candidates.length, startedAt })
@@ -251,44 +329,38 @@ export class CoverageAnalyzer {
 
     try {
       for (const row of candidates) {
-        const full = store.getCoverage(row.id)
-        if (!full?.execBlob?.length) {
-          skipped += 1
-          results.push({ coverageId: row.id, nodeId: row.nodeId, status: 'skipped', error: null })
-          continue
-        }
-        const execFile = path.join(workDir, `${row.id}.exec`)
-        const xmlFile = path.join(workDir, `${row.id}.xml`)
-        fs.writeFileSync(execFile, full.execBlob)
-        try {
-          const { result } = await this.runner({
-            execFile,
-            xmlFile,
-            classfiles: this.config.classfiles,
-            sourcefiles: this.config.sourcefiles,
-            cliPath: this.config.cliPath,
-            javaBin: this.config.javaBin,
-            timeoutMs: this.timeoutMs,
-          })
-          store.updateCoverageResult(row.id, { status: 'analyzed', result, error: null })
+        const outcome = await this.analyzeRow(row, { workDir })
+        if (outcome.status === 'analyzed') {
           analyzed += 1
+          const totals = outcome.result.totals
           results.push({
             coverageId: row.id,
             nodeId: row.nodeId,
             status: 'analyzed',
-            covered: result.totals.covered,
-            missed: result.totals.missed,
-            total: result.totals.total,
-            lineRate: result.totals.lineRate,
-            files: result.totals.files,
-            classes: result.totals.classes,
+            covered: totals.covered,
+            missed: totals.missed,
+            total: totals.total,
+            lineRate: totals.lineRate,
+            files: totals.files,
+            classes: totals.classes,
             error: null,
           })
-        } catch (err) {
-          const error = stableError(err)
-          store.updateCoverageResult(row.id, { status: 'captured', result: null, error })
+        } else if (outcome.status === 'analysis_failed') {
           failed += 1
-          results.push({ coverageId: row.id, nodeId: row.nodeId, status: 'analysis_failed', error })
+          results.push({
+            coverageId: row.id,
+            nodeId: row.nodeId,
+            status: 'analysis_failed',
+            error: outcome.error,
+          })
+        } else {
+          skipped += 1
+          results.push({
+            coverageId: row.id,
+            nodeId: row.nodeId,
+            status: outcome.status === 'pending' ? 'skipped' : outcome.status,
+            error: outcome.error || null,
+          })
         }
       }
     } finally {
