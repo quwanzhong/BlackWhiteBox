@@ -1,5 +1,7 @@
 # 黑百盒 · 黑白盒流程化测试平台（单机版）
 
+[![CI](https://github.com/quwanzhong/BlackWhiteBox/actions/workflows/ci.yml/badge.svg)](https://github.com/quwanzhong/BlackWhiteBox/actions/workflows/ci.yml)
+
 > 用「流程图」描述业务流程，一键执行，画布上的节点依次**呼吸发光**，跑完自动给出「实际输出 vs 理想输出」的逐项匹对结论。
 
 黑百盒把项目测试拆成两个视角：
