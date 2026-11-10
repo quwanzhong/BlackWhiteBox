@@ -57,6 +57,9 @@ export const api = {
   listExecutions: (params?: { flowId?: string; failureClass?: string }): Promise<any[]> =>
     http.get('/executions', { params }).then((r) => r.data),
   getExecution: (id: string): Promise<any> => http.get(`/executions/${id}`).then((r) => r.data),
+  // M2-5 断线重放：after 之后的事件（含 lastSeq），按 seq 补洞
+  getExecutionEvents: (id: string, after = 0): Promise<{ id: string; lastSeq: number; events: any[] }> =>
+    http.get(`/executions/${id}/events`, { params: { after } }).then((r) => r.data),
   exportExecution: (id: string, format: ExportFormat) => download(`/executions/${id}/export`, format),
   pauseExecution: (id: string) => http.post(`/executions/${id}/pause`),
   resumeExecution: (id: string) => http.post(`/executions/${id}/resume`),

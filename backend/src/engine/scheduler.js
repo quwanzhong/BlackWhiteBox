@@ -64,10 +64,59 @@ export class RunSession {
     this.manualWaiters = new Map()
     this.nodeMap = new Map((flow.nodes || []).map((n) => [n.id, n]))
     this.executed = new Set()
+    // M2-5：真正「跑完出结论」的节点（passed/failed/条件跳过）。恢复时待执行队列按它过滤，
+    // 与 executed（已进入执行的节点，含进行中的人工确认）语义不同。
+    this.done = new Set()
     // M1-2：步骤按行落库、事件攒批提交（20 条或 200 ms）
     this.stepSeq = 0
     this.pendingEvents = []
     this.flushTimer = null
+    // M2-5：事件 seq 在会话内同步分配（WebSocket 与落库必须同号），也决定断线重放游标
+    this.eventSeq = Number.isInteger(opts.resume?.eventSeq)
+      ? opts.resume.eventSeq
+      : store.getEventSeq(this.executionId) || 0
+    this.currentReady = null
+    this.resumed = Boolean(opts.resume)
+    if (Number.isInteger(opts.startedAt)) this.startedAt = opts.startedAt
+    if (opts.resume) this.applyResume(opts.resume)
+  }
+
+  /**
+   * M2-5：把落库的恢复快照灌回会话。
+   * 只覆盖「进度」类状态（已执行节点 / 待执行队列 / 变量 / 步骤 / 事件游标），
+   * 流程定义与环境仍以本次解析结果为准（环境按 envId 重新解密，保证 secret 可用）。
+   */
+  applyResume(resume) {
+    if (Array.isArray(resume.steps)) this.steps = resume.steps
+    if (Number.isInteger(resume.stepSeq)) this.stepSeq = resume.stepSeq
+    if (Array.isArray(resume.executed)) this.executed = new Set(resume.executed)
+    if (Array.isArray(resume.done)) {
+      this.done = new Set(resume.done)
+    } else if (Array.isArray(resume.steps)) {
+      // 快照没有 done（老版本执行）时按步骤结论推导；被打断的尝试不算完成
+      this.done = new Set(
+        resume.steps
+          .filter((s) => ['passed', 'failed'].includes(s.status) || (s.status === 'skipped' && !s.error))
+          .map((s) => s.nodeId)
+          .filter(Boolean)
+      )
+    }
+    if (resume.vars && typeof resume.vars === 'object' && !Array.isArray(resume.vars)) {
+      this.vars = { ...resume.vars }
+      // 环境 secret 快照里是 ***：用本次重新解密的环境值补回，保证恢复后请求仍可用。
+      // 其它变量（含 extract 恰好取到的 secret 明文）以快照为准，仍是 ***（S7 取舍）。
+      const secrets = new Set((this.secretValues || []).map(String))
+      const envVars = this.environment?.variables || {}
+      for (const [key, value] of Object.entries(envVars)) {
+        if (secrets.has(String(value)) && this.vars[key] === '***') this.vars[key] = value
+      }
+    }
+    if (resume.last && typeof resume.last === 'object') this.last = resume.last
+    if (Array.isArray(resume.ready)) this.currentReady = resume.ready
+    if (resume.paused) {
+      this.paused = true
+      this.status = 'paused'
+    }
   }
 
   room() {
@@ -75,8 +124,16 @@ export class RunSession {
   }
 
   emit(type, payload = {}) {
-    // 事件会进 WebSocket、落库、报告：统一先掩码，避免 secret 明文外泄
-    const evt = { executionId: this.executionId, type, payload: this.mask(payload), ts: Date.now() }
+    // 事件会进 WebSocket、落库、报告：统一先掩码，避免 secret 明文外泄。
+    // M2-5：seq 在会话内同步分配，WS 与 execution_events 同号，前端据此去重与补洞。
+    const evt = {
+      v: 2,
+      executionId: this.executionId,
+      seq: ++this.eventSeq,
+      type,
+      payload: this.mask(payload),
+      ts: Date.now(),
+    }
     this.events.push(evt)
     this.pendingEvents.push(evt)
     this.scheduleFlush()
@@ -204,19 +261,50 @@ export class RunSession {
     this.flushEvents()
   }
 
+  /**
+   * M2-5：会话恢复快照（节点边界覆盖写，体积只与节点数/变量数相关）。
+   * vars 掩码落库：若 extract 恰好取到环境 secret 明文，恢复后为 ***，
+   * 这是「明文不落盘」的一贯取舍（docs/02 §9.3）；普通业务变量完整还原。
+   */
+  saveResume() {
+    store.saveExecutionResume(this.executionId, {
+      eventSeq: this.eventSeq,
+      stepSeq: this.stepSeq,
+      executed: [...this.executed],
+      done: [...this.done],
+      ready: this.currentReady || [],
+      vars: this.mask(this.vars),
+      paused: this.status === 'paused',
+      savedAt: Date.now(),
+    })
+  }
+
   async start() {
     store.saveExecutionMeta(this.meta())
     this.saveContext()
-    this.emit('flow_start', {
-      flowId: this.flow.id,
-      flowName: this.flow.name,
-      nodes: (this.flow.nodes || []).map((n) => ({ id: n.id, name: n.name })),
-    })
-    this.log(
-      `流程「${this.flow.name}」开始执行（${(this.flow.nodes || []).length} 个节点，${
-        this.flow.type === 'whitebox' ? '白盒' : '黑盒'
-      }流程）`
-    )
+    if (this.resumed) {
+      // 恢复不重放开场事件：flow_start 等历史已落库，前端回放即可重建画布；
+      // 这里只补一条 flow_resume 让实时端知道会话换进程续跑了。
+      this.emit('flow_resume', {
+        flowId: this.flow.id,
+        flowName: this.flow.name,
+        nodes: (this.flow.nodes || []).map((n) => ({ id: n.id, name: n.name })),
+        restoredNodes: this.executed.size,
+        paused: this.status === 'paused',
+      })
+      this.log(`检测到未完成会话，已从断点恢复（已完成 ${this.executed.size} 个节点）`, 'warn')
+    } else {
+      this.emit('flow_start', {
+        flowId: this.flow.id,
+        flowName: this.flow.name,
+        nodes: (this.flow.nodes || []).map((n) => ({ id: n.id, name: n.name })),
+      })
+      this.log(
+        `流程「${this.flow.name}」开始执行（${(this.flow.nodes || []).length} 个节点，${
+          this.flow.type === 'whitebox' ? '白盒' : '黑盒'
+        }流程）`
+      )
+    }
     try {
       await this.runLoop()
     } catch (e) {
@@ -239,12 +327,22 @@ export class RunSession {
     }
 
     // 计算入口节点（无入边的节点）
-    const indeg = new Map(nodes.map((n) => [n.id, 0]))
-    for (const e of edges) if (indeg.has(e.to)) indeg.set(e.to, indeg.get(e.to) + 1)
-    let ready = nodes.filter((n) => (indeg.get(n.id) || 0) === 0).map((n) => n.id)
-    if (!ready.length) ready = [nodes[0].id]
+    let ready
+    if (this.resumed) {
+      // M2-5：按落库的「待执行队列」续跑；快照缺失时退回「已执行节点之后的前沿」
+      const saved = (this.currentReady || []).filter((id) => this.nodeMap.has(id) && !this.done.has(id))
+      ready = saved.length ? saved : this.frontier(nodes, edges)
+    } else {
+      const indeg = new Map(nodes.map((n) => [n.id, 0]))
+      for (const e of edges) if (indeg.has(e.to)) indeg.set(e.to, indeg.get(e.to) + 1)
+      ready = nodes.filter((n) => (indeg.get(n.id) || 0) === 0).map((n) => n.id)
+      if (!ready.length) ready = [nodes[0].id]
+    }
 
     while (ready.length && !this.stopped) {
+      // 每轮开始快照：此刻的 ready 就是「断点」——进程挂掉后从这里续跑
+      this.currentReady = [...ready]
+      this.saveResume()
       const next = new Set()
       for (const nodeId of ready) {
         if (this.stopped) break
@@ -287,8 +385,26 @@ export class RunSession {
           failureClass: step.failureClass || null,
           failureReason: step.failureReason || null,
         })
+        this.done.add(n.id)
       }
     }
+  }
+
+  /**
+   * M2-5：快照缺失时的恢复前沿 —— 未执行、且「入口」或「已有前驱执行过」的节点。
+   * 只用于老版本执行（无 resume_json）或极窄的写入窗口，正常路径走 currentReady。
+   */
+  frontier(nodes, edges) {
+    const preds = new Map(nodes.map((n) => [n.id, []]))
+    for (const e of edges) if (preds.has(e.to)) preds.get(e.to).push(e.from)
+    const candidates = nodes
+      .filter((n) => !this.done.has(n.id))
+      .filter((n) => {
+        const incoming = preds.get(n.id) || []
+        return incoming.length === 0 || incoming.some((from) => this.done.has(from))
+      })
+      .map((n) => n.id)
+    return candidates.length ? candidates : nodes.filter((n) => !this.done.has(n.id)).map((n) => n.id)
   }
 
   async runNode(nodeId) {
@@ -419,6 +535,10 @@ export class RunSession {
     )
     this.saveStep(step)
     this.persist()
+    // 完成判定：passed/failed 都算「有结论」，恢复时不再重跑；skipped/中断的尝试另算
+    if (step.status === 'passed' || step.status === 'failed') this.done.add(nodeId)
+    // M2-5：节点边界 = 恢复点。此时「已执行」已含当前节点、ready 由下一轮循环刷新
+    this.saveResume()
     return step.status === 'passed'
   }
 
@@ -459,6 +579,7 @@ export class RunSession {
     this.log('⏸ 执行已暂停', 'warn')
     this.saveMeta()
     this.persist()
+    this.saveResume()
     return true
   }
 
@@ -470,6 +591,7 @@ export class RunSession {
     this.log('▶ 执行已恢复')
     this.saveMeta()
     this.persist()
+    this.saveResume()
     return true
   }
 
@@ -487,6 +609,7 @@ export class RunSession {
     this.saveContext()
     this.saveMeta()
     this.persist()
+    this.saveResume()
     return true
   }
 

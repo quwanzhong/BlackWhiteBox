@@ -68,6 +68,23 @@ router.get('/:id', (req, res) => {
   res.json(enrichExecutionDetail(detail))
 })
 
+/**
+ * M2-5 断线重放：返回 after 之后的事件（含 lastSeq）。
+ * 前端重连后先按 lastSeq 补齐，再订阅 WS，最后按 seq 去重（docs/02 §5.3）。
+ */
+router.get('/:id/events', (req, res) => {
+  const after = Number.parseInt(req.query.after, 10)
+  const limit = Number.parseInt(req.query.limit, 10)
+  const result = store.listExecutionEvents(req.params.id, {
+    after: Number.isFinite(after) && after > 0 ? after : 0,
+    limit: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+  })
+  if (!result) {
+    return res.status(404).json({ error: '执行记录不存在', code: 'EXECUTION_NOT_FOUND' })
+  }
+  res.json(result)
+})
+
 // 暂停
 router.post('/:id/pause', (req, res) => {
   const session = sessions.get(req.params.id)

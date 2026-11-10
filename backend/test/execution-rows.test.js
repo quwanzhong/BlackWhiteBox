@@ -71,7 +71,14 @@ test('execution_events：多次批量提交后 seq 严格自增，可在已有�
       detail.events.map((e) => e.type),
       ['flow_start', 'log', 'step_start', 'flow_end']
     )
-    assert.deepEqual(detail.events[0], { executionId: 'e2', type: 'flow_start', payload: { nodes: 2 }, ts: 1 })
+    assert.deepEqual(detail.events[0], {
+      v: 2,
+      executionId: 'e2',
+      seq: 1,
+      type: 'flow_start',
+      payload: { nodes: 2 },
+      ts: 1,
+    })
 
     // 空批次不改变计数
     assert.equal(store.appendExecutionEvents('e2', []), 0)
@@ -140,7 +147,7 @@ test('老库升级：M1-1 的 detail_json 自动展开为 context + 行，幂等
   // 2) 正常打开：应当自动跑 002 并把 detail_json 展开成行
   const db = openDatabase(file)
   try {
-    assert.equal(db.pragma('user_version', { simple: true }), 5)
+    assert.equal(db.pragma('user_version', { simple: true }), 6)
     const store = createStore(db)
     const detail = store.getExecutionDetail('e-old')
 
@@ -148,7 +155,11 @@ test('老库升级：M1-1 的 detail_json 自动展开为 context + 行，幂等
     assert.deepEqual(detail.edges, legacyDetail.edges)
     assert.deepEqual(detail.vars, legacyDetail.vars)
     assert.deepEqual(detail.steps, legacyDetail.steps)
-    assert.deepEqual(detail.events, legacyDetail.events, '事件顺序与 payload 必须无损')
+    assert.deepEqual(
+      detail.events,
+      legacyDetail.events.map((evt, i) => ({ v: 2, ...evt, seq: i + 1 })),
+      '事件顺序与 payload 必须无损（M2-5 起信封补 v/seq）'
+    )
     assert.deepEqual(detail.summary, legacyDetail.summary)
     assert.equal(detail.status, 'failed')
 

@@ -91,6 +91,19 @@ export function createStore(db) {
     deleteEvents: db.prepare('DELETE FROM execution_events WHERE execution_id = ?'),
     getEventSeq: db.prepare('SELECT event_seq FROM executions WHERE id = ?'),
     setEventSeq: db.prepare('UPDATE executions SET event_seq = ?, updated_at = ? WHERE id = ?'),
+    // M2-5：断线重放只取 after 之后的事件，避免把整段历史（几千条）读进内存
+    listEventsAfter: db.prepare(`
+      SELECT seq, ts, type, payload_json FROM execution_events
+      WHERE execution_id = ? AND seq > ? ORDER BY seq LIMIT ?
+    `),
+    // M2-5：会话恢复快照（已执行节点 / 待执行队列 / 变量 / 事件游标）
+    saveResume: db.prepare('UPDATE executions SET resume_json = ?, updated_at = ? WHERE id = ?'),
+    /** 进程重启时仍处于非终态的执行（需要重建会话） */
+    listUnfinishedExecutions: db.prepare(`
+      SELECT * FROM executions
+      WHERE finished_at IS NULL AND status IN ('queued', 'running', 'paused')
+      ORDER BY started_at
+    `),
     saveExecutionMeta: db.prepare(`
       INSERT INTO executions (id, flow_id, flow_name, flow_type, project_id, business,
                               status, started_at, finished_at, summary_json,
@@ -267,6 +280,12 @@ export function createStore(db) {
         updated_at    = excluded.updated_at
     `),
     deleteSuiteRuns: db.prepare('DELETE FROM suite_runs WHERE suite_id = ?'),
+    /** 进程重启时仍处于非终态的套件运行（M2-5 收敛为 stopped） */
+    listUnfinishedSuiteRuns: db.prepare(`
+      SELECT * FROM suite_runs
+      WHERE finished_at IS NULL AND status IN ('queued', 'running')
+      ORDER BY started_at
+    `),
   }
 
   const flowRow = (row) => (row ? parse(row.graph_json, null) : null)
@@ -341,12 +360,17 @@ export function createStore(db) {
         }
       : null
 
-  /** 批量追加事件：seq 由 executions.event_seq 统一分配，保证执行内严格自增 */
+  /**
+   * 批量追加事件。
+   * M2-5：事件在 RunSession 里就分配好 seq（WebSocket 与落库必须同号），
+   * 这里优先采用 evt.seq；只有老调用没带 seq 时才自增兜底。event_seq 只增不减。
+   */
   const appendEvents = db.transaction((executionId, events) => {
     if (!events?.length) return 0
     let seq = s.getEventSeq.get(executionId)?.event_seq || 0
     for (const evt of events) {
-      seq += 1
+      const explicit = Number.isInteger(evt?.seq) && evt.seq > 0 ? evt.seq : null
+      seq = explicit ?? seq + 1
       s.insertEvent.run(executionId, seq, evt.ts ?? null, evt.type ?? null, JSON.stringify(evt.payload ?? null))
     }
     s.setEventSeq.run(seq, Date.now(), executionId)
@@ -489,6 +513,48 @@ export function createStore(db) {
     appendExecutionEvents(executionId, events) {
       return appendEvents(executionId, events)
     },
+    /** M2-5：当前事件游标（新建会话时从库里续上，避免重启后 seq 归零） */
+    getEventSeq(executionId) {
+      return s.getEventSeq.get(executionId)?.event_seq ?? 0
+    },
+    /** M2-5：保存会话恢复快照（节点边界时调用，每次覆盖） */
+    saveExecutionResume(executionId, resume) {
+      s.saveResume.run(JSON.stringify(resume ?? null), Date.now(), executionId)
+      return resume
+    },
+    /** M2-5：读取恢复快照 + 事件游标（重建会话用） */
+    getExecutionResume(id) {
+      const row = s.getExecutionRow.get(id)
+      if (!row) return null
+      return {
+        resume: parse(row.resume_json, null),
+        lastSeq: row.event_seq ?? 0,
+      }
+    },
+    /** M2-5：断线重放 —— after 之后的事件（含 lastSeq，供前端判断是否有缺口） */
+    listExecutionEvents(id, { after = 0, limit = 1000 } = {}) {
+      const row = s.getExecutionRow.get(id)
+      if (!row) return null
+      const safeAfter = Number.isInteger(Number(after)) && Number(after) >= 0 ? Number(after) : 0
+      const safeLimit = Math.min(Math.max(Number.isInteger(Number(limit)) ? Number(limit) : 1000, 1), 5000)
+      const events = s.listEventsAfter.all(id, safeAfter, safeLimit).map((r) => ({
+        v: 2,
+        executionId: id,
+        seq: r.seq,
+        ts: r.ts,
+        type: r.type,
+        payload: parse(r.payload_json, null),
+      }))
+      return { id, lastSeq: row.event_seq ?? 0, events }
+    },
+    /** M2-5：进程重启后需要重建会话的执行（meta 行；明细由调用方逐条取） */
+    listUnfinishedExecutions() {
+      return s.listUnfinishedExecutions.all().map(executionRow)
+    },
+    /** M2-5：进程重启后仍非终态的套件运行（收敛为 stopped，子执行单独恢复） */
+    listUnfinishedSuiteRuns() {
+      return s.listUnfinishedSuiteRuns.all().map(suiteRunRow)
+    },
     getExecutionDetail(id) {
       const row = s.getExecutionRow.get(id)
       if (!row) return null
@@ -498,7 +564,10 @@ export function createStore(db) {
         .map((r) => parse(r.data_json, null))
         .filter(Boolean)
       const events = s.listEvents.all(id).map((r) => ({
+        // M2-5：事件信封统一带 v/seq（WS、重放接口、详情页三处同一形状）
+        v: 2,
         executionId: id,
+        seq: r.seq,
         type: r.type,
         payload: parse(r.payload_json, null),
         ts: r.ts,

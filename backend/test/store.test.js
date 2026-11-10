@@ -138,7 +138,7 @@ test('executions：列表只读 meta，详情完整；后到的 meta 覆盖状�
       nodes: [{ id: 'n1', name: '创建订单' }],
       edges: [],
       steps: [{ nodeId: 'n1', status: 'passed' }],
-      events: [{ executionId: 'e1', type: 'flow_start', payload: {}, ts: 1 }],
+      events: [{ v: 2, executionId: 'e1', seq: 1, type: 'flow_start', payload: {}, ts: 1 }],
       vars: { baseUrl: 'http://127.0.0.1' },
     }
     store.saveExecutionDetail(detail)

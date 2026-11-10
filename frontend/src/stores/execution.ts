@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { io, type Socket } from 'socket.io-client'
 import type { NodeStatus } from '../types/flow'
 import { getToken } from '../security/token'
+import { api } from '../api'
 
 let socket: Socket | null = null
 let bound = false
@@ -39,6 +40,9 @@ export const useExecStore = defineStore('execution', {
     lastEvent: null as any,
     waitingNodeId: '',
     connected: false,
+    // M2-5：已应用到画布的最大事件 seq，用于去重与断线补洞
+    lastSeq: 0,
+    replaying: false,
   }),
   getters: {
     running(state): boolean {
@@ -57,8 +61,9 @@ export const useExecStore = defineStore('execution', {
       this.summary = null
       this.lastEvent = null
       this.waitingNodeId = ''
+      this.lastSeq = 0
     },
-    connect(executionId: string, flowName = '', flowId = '') {
+    async connect(executionId: string, flowName = '', flowId = '') {
       this.reset()
       this.executionId = executionId
       this.flowName = flowName
@@ -66,11 +71,19 @@ export const useExecStore = defineStore('execution', {
       this.status = 'running'
       const s = getSocket()
       this.connected = s.connected
-      s.emit('join', { room: 'exec:' + executionId })
       if (!bound) {
         bound = true
         s.on('connect', () => {
-          useExecStore().connected = true
+          const store = useExecStore()
+          // M2-5：断线重连 —— 先把缺口补齐（after=lastSeq），再重新进房间继续收实时事件
+          const reconnected = store.lastSeq > 0 || store.connected
+          store.connected = true
+          if (store.executionId && reconnected) {
+            store
+              .backfill()
+              .catch(() => undefined)
+              .then(() => s.emit('join', { room: 'exec:' + store.executionId }))
+          }
         })
         s.on('disconnect', () => {
           useExecStore().connected = false
@@ -79,8 +92,28 @@ export const useExecStore = defineStore('execution', {
           useExecStore().handleEvent(evt)
         })
       }
+      // M2-5：先回放历史（打开页面也能重建进行中的执行），后进房间 ——
+      // 房间内只可能收到「回放最后一条之后」的新事件，与回放重叠的部分由 seq 去重兜底
+      await this.backfill().catch(() => undefined)
+      s.emit('join', { room: 'exec:' + executionId })
+    },
+    /** M2-5：按 lastSeq 向后端补齐事件（全量回放用 after=0） */
+    async backfill() {
+      if (!this.executionId) return
+      this.replaying = true
+      try {
+        const data = await api.getExecutionEvents(this.executionId, this.lastSeq)
+        for (const evt of data.events || []) this.handleEvent(evt)
+      } finally {
+        this.replaying = false
+      }
     },
     handleEvent(evt: any) {
+      // M2-5：seq 去重 —— WS 与回放可能重叠，seq <= lastSeq 的一律丢弃
+      if (typeof evt?.seq === 'number') {
+        if (evt.seq <= this.lastSeq) return
+        this.lastSeq = evt.seq
+      }
       this.lastEvent = evt
       const p = evt.payload || {}
       switch (evt.type) {
@@ -111,6 +144,10 @@ export const useExecStore = defineStore('execution', {
           break
         case 'resumed':
           this.status = 'running'
+          break
+        case 'flow_resume':
+          // M2-5：会话换进程续跑（历史事件已在回放里重建画布，只同步状态）
+          if (!p.paused) this.status = 'running'
           break
         case 'stopped':
           this.status = 'stopped'

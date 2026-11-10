@@ -12,6 +12,7 @@
  *   场景 8  套件与队列：CRUD → 并发上限 → 重试/flaky → failFast → 停止 → 删除语义
  *   场景 9  失败归类：8 类规则逐条命中 → 列表筛选 → 归类原因脱敏 → 事件/套件口径一致
  *   场景 10 报告导出：JUnit/HTML/JSON 三格式 → S8 脱敏 → 计数一致 → 套件导出 → 400/404
+ *   场景 11 会话恢复：真实子进程执行 → 强杀 → 重启后按断点续跑 → 断线重放 after → 人工确认收尾
  *
  * 环境与 verify-m1-3 同口径：临时库 + 真实端口 + token；Apifox 侧只依赖本机缓存文件
  * （oas-cache.json，MCP 拉取的产物格式），不依赖外网。
@@ -20,6 +21,9 @@ import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { fileURLToPath } from 'node:url'
 import { io } from 'socket.io-client'
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'heibaihe-scenes-'))
@@ -41,6 +45,9 @@ let stubActive = 0
 let stubPeak = 0
 /** 场景 8 专用：前两次 500，之后 200，用于验证重试/flaky */
 let scene8FlakyHits = 0
+/** 场景 11 专用：跨进程重启后仍要能读到命中次数（桩在父进程） */
+let scene11FirstHits = 0
+let scene11ThirdHits = 0
 const stub = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
   const send = (status, body) => {
@@ -69,6 +76,14 @@ const stub = http.createServer(async (req, res) => {
       scene8FlakyHits += 1
       if (scene8FlakyHits <= 2) return send(500, { code: 500, hit: scene8FlakyHits })
       return send(200, { code: 0, hit: scene8FlakyHits })
+    }
+    if (url.pathname === '/api/scene11-first') {
+      scene11FirstHits += 1
+      return send(200, { code: 0, data: { step: 'first', hits: scene11FirstHits } })
+    }
+    if (url.pathname === '/api/scene11-third') {
+      scene11ThirdHits += 1
+      return send(200, { code: 0, data: { step: 'third', hits: scene11ThirdHits } })
     }
     if (url.pathname === '/api/echo') {
       const chunks = []
@@ -1134,6 +1149,223 @@ check(
   `bad=${badFormat10.status}/${JSON.parse(badFormat10.text).code} missing=${missingExec10.status}/${JSON.parse(missingExec10.text).code}`
 )
 
+// ================================================================ 场景 11 · 会话恢复（真实子进程）
+const SRC_INDEX = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/index.js')
+
+/** 取一个空闲端口：先 bind 再释放，避免子进程与父进程抢端口 */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = http.createServer()
+    probe.once('error', reject)
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address()
+      probe.close(() => resolve(port))
+    })
+  })
+}
+
+/** 真实启动一个后端子进程（独立数据目录/库），等 /api/health 就绪 */
+async function startBackend({ port, dataDir }) {
+  const child = spawn(process.execPath, [SRC_INDEX], {
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HEIBAIHE_HOST: '127.0.0.1',
+      HEIBAIHE_DATA_DIR: dataDir,
+      HEIBAIHE_DB: path.join(dataDir, 'restart.db'),
+      HEIBAIHE_TOKEN: TOKEN,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const logs = []
+  child.stdout.on('data', (buf) => logs.push(buf.toString('utf8')))
+  child.stderr.on('data', (buf) => logs.push(buf.toString('utf8')))
+  const deadline = Date.now() + 15000
+  for (;;) {
+    if (child.exitCode !== null) {
+      throw new Error(`后端子进程提前退出（code=${child.exitCode}）：${logs.join('')}`)
+    }
+    try {
+      const health = await fetch(`http://127.0.0.1:${port}/api/health`)
+      if (health.ok) break
+    } catch {
+      // 端口还没监听：继续轮询
+    }
+    if (Date.now() > deadline) throw new Error(`后端子进程未在 15s 内就绪：${logs.join('')}`)
+    await sleep(80)
+  }
+  return { child, port, base: `http://127.0.0.1:${port}`, logs }
+}
+
+/** 强杀/停止子进程；已退出时直接返回，避免 once('exit') 永久挂起 */
+async function stopBackend(backend, signal = 'SIGKILL') {
+  if (!backend || backend.child.exitCode !== null) return
+  backend.child.kill(signal)
+  await once(backend.child, 'exit')
+}
+
+const scene11Dir = path.join(DIR, 'scene11')
+fs.mkdirSync(scene11Dir, { recursive: true })
+const scene11Port = await freePort()
+let backend11 = await startBackend({ port: scene11Port, dataDir: scene11Dir })
+const auth11 = { authorization: `Bearer ${TOKEN}` }
+
+// 每次请求都读当前 backend11：重启后 base 可能变化（这里同端口，但保持写法安全）
+const get11 = async (p) => {
+  const res = await fetch(`${backend11.base}${p}`, { headers: auth11 })
+  return { status: res.status, body: await res.json() }
+}
+const post11 = async (p, body) => {
+  const res = await fetch(`${backend11.base}${p}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...auth11 },
+    body: JSON.stringify(body ?? {}),
+  })
+  return { status: res.status, body: await res.json() }
+}
+const waitDetail11 = async (id, predicate, label, timeoutMs = 15000) => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const detail = (await get11(`/api/executions/${id}`)).body
+    if (predicate(detail)) return detail
+    await sleep(60)
+  }
+  throw new Error(`等待${label}超时：${id}`)
+}
+const waitEvents11 = async (id, after, predicate, timeoutMs = 15000) => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const body = (await get11(`/api/executions/${id}/events?after=${after}`)).body
+    if (predicate(body)) return body
+    await sleep(60)
+  }
+  throw new Error(`等待事件重放超时：${id} after=${after}`)
+}
+const stepStatus11 = (detail, nodeId) =>
+  (detail.steps || []).filter((s) => s.nodeId === nodeId).map((s) => s.status)
+
+try {
+  const flow11 = (
+    await post11('/api/flows', {
+      name: '场景11 会话恢复',
+      type: 'blackbox',
+      variables: { baseUrl: stubBase },
+      nodes: [
+        {
+          id: 'n1',
+          name: '第一步',
+          action: { type: 'http', method: 'GET', url: `${stubBase}/api/scene11-first` },
+          expected: { status: 200, checks: [] },
+        },
+        {
+          id: 'n2',
+          name: '人工确认',
+          action: { type: 'manual', hint: '强杀重启后仍要停在这里' },
+          expected: { status: 200, checks: [] },
+        },
+        {
+          id: 'n3',
+          name: '第三步',
+          action: { type: 'http', method: 'GET', url: `${stubBase}/api/scene11-third` },
+          expected: { status: 200, checks: [] },
+        },
+      ],
+      edges: [
+        { id: 'e1', from: 'n1', to: 'n2', condition: '' },
+        { id: 'e2', from: 'n2', to: 'n3', condition: '' },
+      ],
+    })
+  ).body
+
+  const run11 = (await post11(`/api/flows/${flow11.id}/run`, {})).body
+  const id11 = run11.executionId
+
+  const paused11 = await waitDetail11(
+    id11,
+    (d) => stepStatus11(d, 'n2').includes('waiting'),
+    '首次停在人工确认'
+  )
+  const eventsBefore11 = (await get11(`/api/executions/${id11}/events`)).body
+  check(
+    '11.1 真实执行停在人工确认：第一步已 passed、事件 seq 从 1 连续，桩命中 1 次',
+    paused11.status === 'running' &&
+      stepStatus11(paused11, 'n1').join() === 'passed' &&
+      stepStatus11(paused11, 'n2').join() === 'waiting' &&
+      eventsBefore11.lastSeq >= 3 &&
+      eventsBefore11.events.every((e, i) => e.v === 2 && e.seq === i + 1) &&
+      scene11FirstHits === 1,
+    `status=${paused11.status} n1=${stepStatus11(paused11, 'n1').join()} n2=${stepStatus11(paused11, 'n2').join()} lastSeq=${eventsBefore11.lastSeq} firstHits=${scene11FirstHits}`
+  )
+
+  // 强杀：模拟断电/崩溃，进程没有机会做优雅退出
+  const lastSeq11 = eventsBefore11.lastSeq
+  await stopBackend(backend11)
+  backend11 = null
+
+  // 同一数据目录重启：启动时会 restoreSessions，从节点边界续跑
+  backend11 = await startBackend({ port: scene11Port, dataDir: scene11Dir })
+
+  const resumed11 = await waitDetail11(
+    id11,
+    (d) => stepStatus11(d, 'n2').join() === 'skipped,waiting',
+    '重启后中断尝试补证并重新等待'
+  )
+  const interrupted11 = resumed11.steps.find((s) => s.nodeId === 'n2' && s.status === 'skipped')
+  check(
+    '11.2 重启后从节点边界续跑：中断尝试记为 skipped 且写明「服务重启」，已完成节点不重跑',
+    !!interrupted11 &&
+      /服务重启/.test(interrupted11.error || '') &&
+      stepStatus11(resumed11, 'n1').join() === 'passed' &&
+      scene11FirstHits === 1,
+    `n1=${stepStatus11(resumed11, 'n1').join()} n2=${stepStatus11(resumed11, 'n2').join()} firstHits=${scene11FirstHits}`
+  )
+
+  const tail11 = await waitEvents11(id11, lastSeq11, (body) =>
+    body.events.some((e) => e.type === 'flow_resume')
+  )
+  const tailSeqs11 = tail11.events.map((e) => e.seq)
+  check(
+    '11.3 断线重放：after=lastSeq 只返回增量，seq 接着旧游标连续自增，且恰好一条 flow_resume',
+    tail11.lastSeq > lastSeq11 &&
+      tailSeqs11.every((seq, i) => seq === lastSeq11 + 1 + i) &&
+      tail11.events.filter((e) => e.type === 'flow_resume').length === 1,
+    `lastSeq=${lastSeq11}→${tail11.lastSeq} tail=${tail11.events.map((e) => `${e.seq}:${e.type}`).join(',')}`
+  )
+
+  const manual11 = await post11(`/api/executions/${id11}/manual`, {
+    nodeId: 'n2',
+    pass: true,
+    note: '强杀重启后人工确认',
+  })
+  const final11 = await waitDetail11(id11, (d) => d.status === 'passed', '确认后执行完毕')
+  check(
+    '11.4 确认后收尾：会话 passed、后续节点只执行一次，first 没有被重放',
+    manual11.body.ok === true &&
+      stepStatus11(final11, 'n1').join() === 'passed' &&
+      stepStatus11(final11, 'n2').join() === 'skipped,passed' &&
+      stepStatus11(final11, 'n3').join() === 'passed' &&
+      scene11FirstHits === 1 &&
+      scene11ThirdHits === 1,
+    `n1=${stepStatus11(final11, 'n1').join()} n2=${stepStatus11(final11, 'n2').join()} n3=${stepStatus11(final11, 'n3').join()} firstHits=${scene11FirstHits} thirdHits=${scene11ThirdHits}`
+  )
+
+  // 全量重放必须与详情页事件完全一致（同一落库源，供前端刷新/断线补洞使用）
+  const full11 = (await get11(`/api/executions/${id11}/events?after=0`)).body
+  const types11 = full11.events.map((e) => e.type)
+  check(
+    '11.5 全量重放与详情一致：seq/type 逐条对齐，flow_start/flow_resume/flow_end 各一条',
+    full11.lastSeq === final11.events.length &&
+      full11.events.map((e) => `${e.seq}:${e.type}`).join() ===
+        final11.events.map((e) => `${e.seq}:${e.type}`).join() &&
+      types11.filter((t) => t === 'flow_start').length === 1 &&
+      types11.filter((t) => t === 'flow_resume').length === 1 &&
+      types11.filter((t) => t === 'flow_end').length === 1,
+    `replay=${full11.events.length} detail=${final11.events.length} lastSeq=${full11.lastSeq}`
+  )
+} finally {
+  await stopBackend(backend11)
+}
+
 // ---------------------------------------------------------------- 汇总
 console.log('\n结论')
 console.log('-'.repeat(78))
@@ -1143,7 +1375,7 @@ for (const r of results) {
   console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  —  ${r.detail}` : ''}`)
 }
 console.log('-'.repeat(78))
-console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，10 个场景）`)
+console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，11 个场景）`)
 
 await new Promise((resolve) => appCtx.io.close(resolve))
 await new Promise((resolve) => appCtx.server.close(resolve))

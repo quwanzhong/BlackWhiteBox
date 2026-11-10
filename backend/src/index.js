@@ -3,11 +3,15 @@ import { HOST, PORT, FRONTEND_DIST } from './config.js'
 import { createApp } from './app.js'
 import { TOKEN_FILE } from './security/token.js'
 import { seedIfEmpty } from './seed.js'
+import { restoreSessions } from './engine/recovery.js'
 
-const { server, token } = createApp({ originPort: PORT })
+const { server, io, token } = createApp({ originPort: PORT })
 
 // 首次启动写入演示流程
 seedIfEmpty()
+
+// M2-5：把上次进程遗留的非终态会话按节点边界续跑（套件运行收敛为 stopped）
+restoreSessions({ io })
 
 const shownHost = HOST === '0.0.0.0' ? '127.0.0.1' : HOST
 const base = `http://${shownHost}:${PORT}`

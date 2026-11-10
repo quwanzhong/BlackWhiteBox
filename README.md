@@ -21,7 +21,7 @@
 
 - **双视图流程画布**：黑盒 / 白盒分 Tab 管理，X6 画布支持拖拽、缩放、连线条件编辑。
 - **执行发光动画**：当前节点蓝色呼吸光晕 + 连线流光；通过变绿、失败变红闪烁、等待人工确认变橙、跳过置灰。
-- **实时执行通道**：Socket.IO 推送 `flow_start / step_start / step_end / flow_end` 等事件，暂停 / 继续 / 停止即时生效。
+- **实时执行通道**：Socket.IO 推送 `flow_start / step_start / step_end / flow_end` 等事件（`v:2` 信封带 `seq`），暂停 / 继续 / 停止即时生效；断线后按游标补齐，不丢事件。
 - **输入输出匹对校验**：每个节点配置「理想输出」（状态码 + JSONPath 断言 + 响应包含 + 响应结构 + 耗时上限），执行后逐条展示期望值、实际值、差异说明。
 - **变量提取与传递**：`extract: { token: "$.data.token" }`，后续节点用 `{{token}}` 引用，支持请求地址 / Header / Body。
 - **条件流转**：连线可写 `$.code == 0 && $.data.ok`，不满足则跳过下游分支。
@@ -41,6 +41,9 @@
   单文件 HTML（内联样式、零外链，直接发给别人看）与 JSON（回归 diff）；导出前统一脱敏——
   请求头 / 响应头敏感键、URL 敏感参数、请求体敏感键一律 `***`，环境密钥明文永不出现，
   响应体保留原样作为复盘证据。
+- **断线重放与会话恢复（M2-5）**：事件在 `RunSession` 内同步编号，`GET /events?after=<seq>` 增量补齐；
+  执行会话按节点边界持久化，进程被强杀后重启会从断点续跑——已完成节点不重跑、中断尝试留下 `skipped` 证据、
+  暂停状态保持；未完成的套件运行收敛为 `stopped`，不擅自续跑。
 - **缺陷反馈**：报告失败步骤一键提缺陷，记录流程、请求、实际值 / 期望值与校验差异，支持状态流转与按项目筛选。
 - **Java 白盒分析器**：JDK 内置解析 API 实现，零第三方依赖，输出调用链 JSON 直接导入。
 
@@ -81,15 +84,15 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 
 ```bash
 npm run lint            # 后端 + 前端 eslint（--max-warnings=0）
-npm test                # 后端 node --test（95 个用例，快速反馈）
+npm test                # 后端 node --test（102 个用例，快速反馈）
 npm run test:coverage   # 同上 + 覆盖率门槛（行/分支/函数均 ≥70%）
-npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（69 项检查）
+npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（74 项检查）
 npm run ci              # lint → test:coverage → verify → build，与 GitHub Actions 同序
 ```
 
 覆盖率只统计核心模块（`engine`、`environments`、`suites`、`reporting`、`projects/scanner`、`infra/store`、`security`），
-当前本地（Windows）为行 **96.49%** / 分支 **79.62%** / 函数 **96.42%**；路由与导入器等胶水层由
-`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 69 项 / 10 个场景）。
+当前本地（Windows）为行 **96.07%** / 分支 **79.61%** / 函数 **95.79%**；路由与导入器等胶水层由
+`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 74 项 / 11 个场景）。
 
 CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率门禁与场景验收，并断言构建产物
 `frontend/dist/index.html` 不含令牌占位符（生产令牌只能由后端在响应时注入）。
@@ -109,7 +112,7 @@ CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率�
 │       └── styles/            发光动画与全局样式
 ├── backend/                   Node.js + Express + Socket.IO + axios
 │   └── src/
-│       ├── engine/            调度器、HTTP 执行器、校验器、JSONPath、并发队列、会话注册表
+│       ├── engine/            调度器、HTTP 执行器、校验器、JSONPath、并发队列、会话注册表、重启恢复
 │       ├── environments/      环境变量 / 全局 Header / secrets 解析与掩码
 │       ├── suites/            套件定义校验 + 进程内并发执行（重试 / failFast / stop）
 │       ├── reporting/         失败归类器（8 类规则）+ 导出（JUnit/HTML/JSON）与 S8 脱敏
@@ -237,6 +240,7 @@ java -jar java-analyzer.jar --project . --entry OrderController#createOrder --de
 - [x] 套件 + 并发队列 + 重试 / failFast（M2-2）
 - [x] 失败自动归类 8 类 + 报告筛选（M2-3）
 - [x] 执行 / 套件导出 JUnit · HTML · JSON + 导出脱敏（M2-4）
+- [x] 会话持久化 + 断线重放 `seq` / `after` + 强杀重启续跑（M2-5）
 - [ ] 流程 DSL 版本化与导入校验
 - [ ] 断言提取联动（把提取值直接回填到断言）
 - [ ] 定时执行 + 失败通知（企业微信 / 飞书）

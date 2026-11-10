@@ -41,14 +41,17 @@ socket.emit('join', { room: 'exec:' + executionId })
 
 ```ts
 interface ExecEvent {
+  v: 2                  // 信封版本（M2-5）
   executionId: string
+  seq: number           // 单次执行内严格自增，从 1 开始；WS 与落库同号
   type: string
   payload: Record<string, any>
   ts: number            // 服务端毫秒时间戳
 }
 ```
 
-服务端同时把每一条事件写入 `execution.events`，因此**报告可以完整回放**，不依赖前端是否在线。
+服务端同时把每一条事件写入 `execution_events` 表，因此**报告可以完整回放**，不依赖前端是否在线；
+客户端重连后用 `seq` 去重、用 `/events?after=` 补洞（见 §7）。
 
 ---
 
@@ -57,6 +60,7 @@ interface ExecEvent {
 | `type` | 触发时机 | `payload` 关键字段 |
 |---|---|---|
 | `flow_start` | 会话开始 | `flowId` `flowName` `nodes[]`（`{id,name}`） |
+| `flow_resume` ★ | 进程重启后从断点续跑 | `flowId` `flowName` `nodes[]` `restoredNodes` `paused` |
 | `step_start` | 单个节点开始执行 | `nodeId` `nodeName` `stepId` |
 | `manual_wait` | 人工步骤等待确认 | `nodeId` `nodeName` `hint` |
 | `step_end` | 单个节点结束 | `nodeId` `nodeName` `status` `durationMs` `checks` `actual` `request` `error` `extracted` `failureClass` `failureReason` |
@@ -223,17 +227,35 @@ pending ──step_start──► running ──manual_wait──► waiting ─
 
 ## 7. 断线与恢复
 
-- Socket.IO 自动重连，重连后前端重新 `join` 房间；
-- 服务端事件已持久化，断线期间的事件可通过执行详情接口补齐：
+- Socket.IO 自动重连，重连后前端重新 `join` 房间；**先补齐再订阅**，避免漏掉断线窗口内的事件。
+- 服务端事件已持久化，断线期间的事件通过增量接口补齐：
 
 ```
-GET /api/executions/:id
-→ { ..., steps: [...], events: [...], vars: {...} }
+GET /api/executions/:id/events?after=<lastSeq>&limit=<n>
+→ { "id": "...", "lastSeq": 42, "events": [ { "v": 2, "executionId": "...", "seq": 43, "type": "step_end", "...": "..." } ] }
 ```
 
-- 执行会话保存在内存（`registry.js`），**服务重启后进行中的会话会丢失**，但已落盘的历史报告仍可查看。
+- `after` 是**排他游标**（只返回 `seq > after`）；`limit` 只截断本页，`lastSeq` 始终是全局游标；
+  记录不存在返回 `404` + `code: "EXECUTION_NOT_FOUND"`；非法参数按默认值处理，不报错。
+- 前端按 `seq <= lastSeq` 丢弃 WS 重包；重连流程为 `backfill(lastSeq)` → `join` → 继续消费 WS。
 
-### 7.1 报告列表与归类筛选
+### 7.1 会话恢复（M2-5）
+
+- 恢复点固定在**节点边界**，`executions.resume_json` 存
+  `{eventSeq, stepSeq, executed, done, ready, vars, paused, savedAt}`。
+- `executed` = 进入过执行的节点（含人工等待中）；`done` = 已出结论的节点（`passed` / `failed` / 条件跳过）。
+  恢复时用 `done` 过滤 `ready`，因此人工等待中的节点会重新等待确认，**不会被误判为已完成**。
+- HTTP 节点原子：节点结束后才更新恢复点。崩溃时正在进行的尝试补成 `skipped`（`error` 含「服务重启」），
+  该节点重新执行；已完成节点不重跑。
+- 重启后只补一条 `flow_resume`（不重放 `flow_start`），`seq` 从库里的游标继续，不会从 1 重号。
+- 暂停状态随快照落库：重启后仍为 `paused`，等用户 `POST /resume`；不会擅自继续。
+- `vars` 快照写入前已掩码；恢复时只把「环境 secret 且快照值为 `***`」的键重新解密补回，
+  `extract` 取到的 secret 明文不还原（S7）。
+- 未完成的 `suite_runs` 收敛为 `stopped` + `summary.message` 写明「服务重启」，**不自动续跑**；
+  其子执行按普通会话恢复。
+- 缺 `resume_json` 时按 `frontier()`（未完成且入口/前驱已完成）兜底；流程快照也缺失时收敛为 `stopped` 并留证。
+
+### 7.2 报告列表与归类筛选
 
 ```
 GET /api/executions                 → [ { id, flowId, flowName, status, failureClass, failureReason, … } ]
