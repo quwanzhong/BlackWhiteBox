@@ -30,6 +30,10 @@
 - **项目级管理**：一个项目 = 本机前端工程目录 + 该项目勾选的 Apifox 接口快照；同一份文档可服务多个项目，互不干扰。
 - **源码调用分析**：静态扫描 `axios / request / fetch` 等调用点，按路径匹配接口，记录文件 / 行号 / 函数名与真实调用顺序，未匹配可手动关联。
 - **业务功能闭环**：按 Apifox 目录 → 接口路径 → 代码目录划分业务功能，按功能或全量生成可执行黑盒流程。
+- **套件与并发队列（M2-2）**：套件 = 有序流程列表 + 执行策略（并发 1~8、失败重试、failFast、停止），
+  一键并发跑完一批流程；重试后通过标 `flaky`，每条流程仍是独立执行证据，套件只做关联与汇总。
+- **环境与密钥（M2-1）**：环境 = baseUrl + 变量 + 全局请求头 + AES-256-GCM 加密密钥；
+  变量优先级 `流程 < 环境 < 执行时传入 < extract`，密钥不明文落库、不进报告。
 - **缺陷反馈**：报告失败步骤一键提缺陷，记录流程、请求、实际值 / 期望值与校验差异，支持状态流转与按项目筛选。
 - **Java 白盒分析器**：JDK 内置解析 API 实现，零第三方依赖，输出调用链 JSON 直接导入。
 
@@ -70,15 +74,15 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 
 ```bash
 npm run lint            # 后端 + 前端 eslint（--max-warnings=0）
-npm test                # 后端 node --test（67 个用例，快速反馈）
+npm test                # 后端 node --test（78 个用例，快速反馈）
 npm run test:coverage   # 同上 + 覆盖率门槛（行/分支/函数均 ≥70%）
-npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（74 项检查）
+npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（82 项检查）
 npm run ci              # lint → test:coverage → verify → build，与 GitHub Actions 同序
 ```
 
-覆盖率只统计核心模块（`engine`、`environments`、`projects/scanner`、`infra/store`、`security`），
-当前为行 **96.20%** / 分支 **79.56%** / 函数 **95.79%**；路由与导入器等胶水层由
-`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 44 项 / 7 个场景）。
+覆盖率只统计核心模块（`engine`、`environments`、`suites`、`projects/scanner`、`infra/store`、`security`），
+当前为行 **95.86%** / 分支 **80.11%** / 函数 **95.76%**；路由与导入器等胶水层由
+`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 52 项 / 8 个场景）。
 
 CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率门禁与场景验收，并断言构建产物
 `frontend/dist/index.html` 不含令牌占位符（生产令牌只能由后端在响应时注入）。
@@ -89,20 +93,22 @@ CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率�
 黑百盒/
 ├── frontend/                  Vue3 + TS + Vite + Element Plus + AntV X6
 │   └── src/
-│       ├── views/             Dashboard / ProjectsPage / ProjectDetail / FlowList / FlowCanvas / EnvironmentsPage / ReportList / ReportDetail / BugsPage / ImportPage
+│       ├── views/             Dashboard / ProjectsPage / ProjectDetail / FlowList / FlowCanvas / EnvironmentsPage / SuitesPage / ReportList / ReportDetail / BugsPage / ImportPage
 │       ├── components/        canvas（画布与节点）、节点编辑抽屉、步骤详情、结果汇总、目录选择器、日志控制台
 │       ├── stores/            执行状态仓库（Socket.IO 事件 → 动画状态）
 │       ├── api/               后端接口封装
 │       └── styles/            发光动画与全局样式
 ├── backend/                   Node.js + Express + Socket.IO + axios
 │   └── src/
-│       ├── engine/            调度器、HTTP 执行器、校验器、JSONPath、会话注册表
-│       ├── security/          访问令牌、Origin 白名单、目录沙箱、受限表达式求值器
+│       ├── engine/            调度器、HTTP 执行器、校验器、JSONPath、并发队列、会话注册表
+│       ├── environments/      环境变量 / 全局 Header / secrets 解析与掩码
+│       ├── suites/            套件定义校验 + 进程内并发执行（重试 / failFast / stop）
+│       ├── security/          访问令牌、Origin 白名单、目录沙箱、受限表达式求值器、AES-256-GCM 密钥库
 │       ├── infra/store/       SQLite 连接与迁移、执行行读写、JSON 一次性导入
 │       ├── apifox/            MCP 客户端（STDIO JSON-RPC）+ 文档还原 + 接口列表
 │       ├── projects/          源码调用扫描、路径匹配、业务分组、流程生成
 │       ├── importers/         OpenAPI（Apifox）→ 黑盒流程
-│       ├── routes/            flows / executions / import / apifox / projects / bugs / fs / stats
+│       ├── routes/            flows / executions / environments / suites / suite-runs / import / apifox / projects / bugs / fs / stats
 │       ├── store.js           存储门面（内部 SQLite + WAL，门面签名与旧 JSON 版一致）
 │       └── seed.js            演示数据
 ├── analyzers/java-analyzer/   Java 白盒调用链分析器（零依赖，自带示例工程）

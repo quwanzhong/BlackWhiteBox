@@ -131,6 +131,7 @@ test('executions：列表只读 meta，详情完整；后到的 meta 覆盖状�
       ...meta,
       envId: null,
       envVersion: null,
+      suiteRunId: null,
       environment: null,
       nodes: [{ id: 'n1', name: '创建订单' }],
       edges: [],

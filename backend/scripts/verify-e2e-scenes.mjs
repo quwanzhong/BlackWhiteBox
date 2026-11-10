@@ -9,6 +9,7 @@
  *   场景 5  缺陷记录：从执行步骤提缺陷 → 过滤 → 状态流转 → 统计 → 删除
  *   场景 6  统计面板：各计数与列表数据一致
  *   场景 7  环境与密钥：CRUD → 变量优先级 → baseUrl/Header → secrets 不落明文 → 错误码
+ *   场景 8  套件与队列：CRUD → 并发上限 → 重试/flaky → failFast → 停止 → 删除语义
  *
  * 环境与 verify-m1-3 同口径：临时库 + 真实端口 + token；Apifox 侧只依赖本机缓存文件
  * （oas-cache.json，MCP 拉取的产物格式），不依赖外网。
@@ -17,6 +18,7 @@ import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { io } from 'socket.io-client'
 
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'heibaihe-scenes-'))
 const TOKEN = 'verify-scenes-token-0123456789abcdef'
@@ -33,36 +35,51 @@ function check(name, ok, detail) {
 
 // ---------------------------------------------------------------- 接口桩（/api/*，与文档路径一致）
 const STUB_DELAY = 80
+let stubActive = 0
+let stubPeak = 0
+/** 场景 8 专用：前两次 500，之后 200，用于验证重试/flaky */
+let scene8FlakyHits = 0
 const stub = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
   const send = (status, body) => {
     res.writeHead(status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(body))
   }
-  await sleep(STUB_DELAY)
-  if (url.pathname === '/api/login') {
-    return send(200, { code: 0, data: { token: 'tok-abc', user: { id: 1, name: 'alice' } } })
+  stubActive += 1
+  stubPeak = Math.max(stubPeak, stubActive)
+  try {
+    await sleep(Number(url.searchParams.get('ms') || STUB_DELAY))
+    if (url.pathname === '/api/login') {
+      return send(200, { code: 0, data: { token: 'tok-abc', user: { id: 1, name: 'alice' } } })
+    }
+    if (url.pathname === '/api/orders') {
+      return send(200, { code: 0, data: { orders: [{ id: 11, total: 99 }], count: 1 } })
+    }
+    if (url.pathname === '/api/scene8-flaky') {
+      scene8FlakyHits += 1
+      if (scene8FlakyHits <= 2) return send(500, { code: 500, hit: scene8FlakyHits })
+      return send(200, { code: 0, hit: scene8FlakyHits })
+    }
+    if (url.pathname === '/api/echo') {
+      const chunks = []
+      for await (const chunk of req) chunks.push(chunk)
+      const raw = Buffer.concat(chunks).toString('utf8')
+      return send(201, { code: 0, data: { method: req.method, body: raw ? JSON.parse(raw) : null } })
+    }
+    if (url.pathname === '/api/env-echo') {
+      return send(200, {
+        code: 0,
+        data: {
+          query: Object.fromEntries(url.searchParams),
+          headers: req.headers,
+          nextToken: 'extract-scene7',
+        },
+      })
+    }
+    send(404, { code: 404 })
+  } finally {
+    stubActive -= 1
   }
-  if (url.pathname === '/api/orders') {
-    return send(200, { code: 0, data: { orders: [{ id: 11, total: 99 }], count: 1 } })
-  }
-  if (url.pathname === '/api/echo') {
-    const chunks = []
-    for await (const chunk of req) chunks.push(chunk)
-    const raw = Buffer.concat(chunks).toString('utf8')
-    return send(201, { code: 0, data: { method: req.method, body: raw ? JSON.parse(raw) : null } })
-  }
-  if (url.pathname === '/api/env-echo') {
-    return send(200, {
-      code: 0,
-      data: {
-        query: Object.fromEntries(url.searchParams),
-        headers: req.headers,
-        nextToken: 'extract-scene7',
-      },
-    })
-  }
-  send(404, { code: 404 })
 })
 await new Promise((resolve) => stub.listen(0, '127.0.0.1', resolve))
 const stubBase = `http://127.0.0.1:${stub.address().port}`
@@ -107,6 +124,16 @@ async function waitDetail(executionId, predicate, timeoutMs = 10000) {
     await sleep(50)
   }
   throw new Error(`等待执行详情条件超时：${executionId}`)
+}
+
+async function waitSuiteRun(runId, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const run = await (await get(`/api/suite-runs/${runId}`)).json()
+    if (['passed', 'failed', 'stopped'].includes(run.status)) return run
+    await sleep(60)
+  }
+  throw new Error(`套件执行未在 ${timeoutMs} ms 内结束：${runId}`)
 }
 
 // ================================================================ 场景 1 · 流程管理
@@ -547,6 +574,199 @@ check(
     (await get(`/api/environments/${env.id}`)).status === 404
 )
 
+// ================================================================ 场景 8 · 套件与队列（M2-2）
+const makeSceneFlow = async (name, url, expected = { status: 200 }) =>
+  (
+    await post('/api/flows', {
+      name,
+      type: 'blackbox',
+      projectId: project.id,
+      nodes: [{ id: 'n1', name: `${name}-请求`, action: { type: 'http', method: 'GET', url }, expected }],
+      edges: [],
+    })
+  ).json()
+
+const suiteFlows = []
+for (const key of ['A', 'B', 'C', 'D']) {
+  suiteFlows.push(await makeSceneFlow(`场景8 并发-${key}`, `${stubBase}/api/login`))
+}
+const suiteCreatedRes = await post('/api/suites', {
+  name: '场景8 并发套件',
+  projectId: project.id,
+  flowIds: suiteFlows.map((f) => f.id),
+  strategy: { concurrency: 2, retry: 0 },
+})
+const suiteCreated = await suiteCreatedRes.json()
+const dupSuite = await (await post('/api/suites', { name: '场景8 并发套件', projectId: project.id, flowIds: [suiteFlows[0].id] })).json()
+const emptySuite = await (await post('/api/suites', { name: '场景8 空套件', flowIds: [] })).json()
+const ghostSuite = await (await post('/api/suites', { name: '场景8 幽灵流程', flowIds: ['ghost-flow'] })).json()
+check(
+  '8.1 创建套件：顺序保留、策略归一化、重名/空流程/幽灵流程有稳定错误码',
+  suiteCreatedRes.status === 200 &&
+    suiteCreated.flowCount === 4 &&
+    suiteCreated.strategy?.concurrency === 2 &&
+    suiteCreated.strategy?.retryDelayMs === 500 &&
+    suiteCreated.strategy?.failFast === false &&
+    dupSuite.code === 'SUITE_NAME_CONFLICT' &&
+    emptySuite.code === 'SUITE_EMPTY' &&
+    ghostSuite.code === 'SUITE_FLOW_NOT_FOUND',
+  `flows=${suiteCreated.flowCount} conc=${suiteCreated.strategy?.concurrency} dup=${dupSuite.code}`
+)
+
+stubPeak = 0
+const suiteRun = await (await post(`/api/suites/${suiteCreated.id}/run`, {})).json()
+const suiteDone = await waitSuiteRun(suiteRun.suiteRunId)
+check(
+  '8.2 一键执行：队列峰值与 HTTP 桩峰值都等于策略并发 2，4 条流程全部通过',
+  suiteDone.status === 'passed' &&
+    suiteDone.summary.total === 4 &&
+    suiteDone.summary.passed === 4 &&
+    suiteDone.summary.peakConcurrency === 2 &&
+    stubPeak === 2,
+  `status=${suiteDone.status} peak=${suiteDone.summary.peakConcurrency} httpPeak=${stubPeak}`
+)
+check(
+  '8.3 每条流程产生独立执行记录，并全部绑定同一个 suiteRunId',
+  suiteDone.executions.length === 4 &&
+    suiteDone.executions.every((e) => e.suiteRunId === suiteRun.suiteRunId && e.status === 'passed') &&
+    new Set(suiteDone.executions.map((e) => e.flowId)).size === 4,
+  `execs=${suiteDone.executions.length}`
+)
+
+// 真实 WebSocket：加入 suite 房间后应收到进度与结束事件（流程本身约 80 ms，足够覆盖事件窗口）
+const wsSocket = io(base, {
+  path: '/socket.io',
+  transports: ['websocket'],
+  auth: { token: TOKEN },
+  forceNew: true,
+})
+const wsEvents = []
+await new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error('WebSocket 连接超时')), 5000)
+  wsSocket.on('connect', () => {
+    clearTimeout(timer)
+    resolve()
+  })
+  wsSocket.on('connect_error', (err) => {
+    clearTimeout(timer)
+    reject(err)
+  })
+})
+wsSocket.on('suite_event', (evt) => wsEvents.push(evt))
+const wsSuite = await (
+  await post('/api/suites', {
+    name: '场景8 实时事件套件',
+    projectId: project.id,
+    flowIds: [suiteFlows[0].id, suiteFlows[1].id],
+    strategy: { concurrency: 2 },
+  })
+).json()
+const wsRun = await (await post(`/api/suites/${wsSuite.id}/run`, {})).json()
+wsSocket.emit('join', { room: `suite:${wsRun.suiteRunId}` })
+const wsDone = await waitSuiteRun(wsRun.suiteRunId)
+await sleep(300)
+wsSocket.close()
+const wsTypes = new Set(wsEvents.map((evt) => evt.type))
+check(
+  '8.4 实时通道：加入 suite 房间后收到 suite_progress / suite_flow_end / suite_end',
+  wsDone.status === 'passed' &&
+    ['suite_progress', 'suite_flow_end', 'suite_end'].every((type) => wsTypes.has(type)) &&
+    wsEvents.length > 0 &&
+    wsEvents.every((evt) => evt.suiteRunId === wsRun.suiteRunId),
+  `events=${[...wsTypes].join(',')}`
+)
+
+const flakyFlow = await makeSceneFlow('场景8 偶发失败', `${stubBase}/api/scene8-flaky`)
+const flakySuite = await (
+  await post('/api/suites', {
+    name: '场景8 重试套件',
+    projectId: project.id,
+    flowIds: [flakyFlow.id],
+    strategy: { concurrency: 1, retry: 2, retryDelayMs: 5 },
+  })
+).json()
+const flakyRun = await (await post(`/api/suites/${flakySuite.id}/run`, {})).json()
+const flakyDone = await waitSuiteRun(flakyRun.suiteRunId)
+const flakyItem = flakyDone.summary.flows[0]
+check(
+  '8.5 失败重试：前两次 500 后第 3 次通过，标记 flaky 且每次尝试都有执行记录',
+  flakyDone.status === 'passed' &&
+    flakyItem.attempts === 3 &&
+    flakyItem.flaky === true &&
+    flakyDone.summary.flaky === 1 &&
+    flakyDone.executions.length === 3 &&
+    flakyDone.executions.map((e) => e.status).join(',') === 'failed,failed,passed',
+  `attempts=${flakyItem.attempts} execs=${flakyDone.executions.map((e) => e.status).join(',')}`
+)
+
+const failFlow = await makeSceneFlow('场景8 必失败', `${stubBase}/api/login`, { status: 201 })
+const ffSlow1 = await makeSceneFlow('场景8 failFast 流程1', `${stubBase}/api/orders`)
+const ffSlow2 = await makeSceneFlow('场景8 failFast 流程2', `${stubBase}/api/orders`)
+const ffSuite = await (
+  await post('/api/suites', {
+    name: '场景8 failFast 套件',
+    projectId: project.id,
+    flowIds: [failFlow.id, ffSlow1.id, ffSlow2.id],
+    strategy: { concurrency: 1, retry: 0, failFast: true },
+  })
+).json()
+const ffRun = await (await post(`/api/suites/${ffSuite.id}/run`, {})).json()
+const ffDone = await waitSuiteRun(ffRun.suiteRunId)
+check(
+  '8.6 failFast：首个流程失败后，未开始的流程统一 skipped 且不产生执行记录',
+  ffDone.status === 'failed' &&
+    ffDone.summary.failed === 1 &&
+    ffDone.summary.skipped === 2 &&
+    ffDone.executions.length === 1 &&
+    /failFast/.test(ffDone.summary.flows[1].error || ''),
+  `failed=${ffDone.summary.failed} skipped=${ffDone.summary.skipped} execs=${ffDone.executions.length}`
+)
+
+const stopFlow1 = await makeSceneFlow('场景8 长流程1', `${stubBase}/api/login?ms=1500`)
+const stopFlow2 = await makeSceneFlow('场景8 长流程2', `${stubBase}/api/login?ms=1500`)
+const stopSuite = await (
+  await post('/api/suites', {
+    name: '场景8 停止套件',
+    projectId: project.id,
+    flowIds: [stopFlow1.id, stopFlow2.id],
+    strategy: { concurrency: 1 },
+  })
+).json()
+const stopRun = await (await post(`/api/suites/${stopSuite.id}/run`, {})).json()
+const stopDeadline = Date.now() + 8000
+while (Date.now() < stopDeadline) {
+  const current = await (await get(`/api/suite-runs/${stopRun.suiteRunId}`)).json()
+  if (current.summary?.running === 1) break
+  await sleep(50)
+}
+const stopRes = await post(`/api/suite-runs/${stopRun.suiteRunId}/stop`, {})
+const stopDone = await waitSuiteRun(stopRun.suiteRunId)
+const stopAgain = await post(`/api/suite-runs/${stopRun.suiteRunId}/stop`, {})
+check(
+  '8.7 手动停止：在跑流程记 stopped、未开始 skipped，结束后重复停止返回 409',
+  stopRes.status === 200 &&
+    stopDone.status === 'stopped' &&
+    stopDone.summary.flows[0].status === 'stopped' &&
+    stopDone.summary.skipped === 1 &&
+    stopAgain.status === 409,
+  `status=${stopDone.status} flow0=${stopDone.summary.flows[0].status} skipped=${stopDone.summary.skipped}`
+)
+
+const execsBeforeDelete = await (await get('/api/executions')).json()
+const suiteDel = await del(`/api/suites/${suiteCreated.id}`)
+const suiteGone = await get(`/api/suites/${suiteCreated.id}`)
+const runsAfterDelete = await (await get(`/api/suite-runs?suiteId=${suiteCreated.id}`)).json()
+const execsAfterDelete = await (await get('/api/executions')).json()
+check(
+  '8.8 删除套件：定义与套件历史删除，流程执行记录保留（测试证据不丢）',
+  suiteDel.status === 200 &&
+    suiteGone.status === 404 &&
+    runsAfterDelete.length === 0 &&
+    execsBeforeDelete.filter((e) => e.suiteRunId === suiteRun.suiteRunId).length === 4 &&
+    execsAfterDelete.filter((e) => e.suiteRunId === suiteRun.suiteRunId).length === 4,
+  `runs=${runsAfterDelete.length} execs=${execsAfterDelete.filter((e) => e.suiteRunId === suiteRun.suiteRunId).length}`
+)
+
 // ---------------------------------------------------------------- 汇总
 console.log('\n结论')
 console.log('-'.repeat(78))
@@ -556,7 +776,7 @@ for (const r of results) {
   console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  —  ${r.detail}` : ''}`)
 }
 console.log('-'.repeat(78))
-console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，7 个场景）`)
+console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，8 个场景）`)
 
 await new Promise((resolve) => appCtx.io.close(resolve))
 await new Promise((resolve) => appCtx.server.close(resolve))

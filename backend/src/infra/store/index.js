@@ -52,10 +52,17 @@ export function createStore(db) {
     // ---------- 执行记录 ----------
     listExecutions: db.prepare(`
       SELECT id, flow_id, flow_name, flow_type, project_id, business,
-             status, started_at, finished_at, summary_json, env_id, env_version
+             status, started_at, finished_at, summary_json, env_id, env_version,
+             suite_run_id
       FROM executions ORDER BY rowid DESC
     `),
     getExecutionRow: db.prepare('SELECT * FROM executions WHERE id = ?'),
+    listExecutionsBySuiteRun: db.prepare(`
+      SELECT id, flow_id, flow_name, flow_type, project_id, business,
+             status, started_at, finished_at, summary_json, env_id, env_version,
+             suite_run_id
+      FROM executions WHERE suite_run_id = ? ORDER BY started_at, rowid
+    `),
     saveExecutionContext: db.prepare('UPDATE executions SET context_json = ?, updated_at = ? WHERE id = ?'),
     upsertStep: db.prepare(`
       INSERT INTO execution_steps (execution_id, seq, node_id, status, data_json)
@@ -81,10 +88,10 @@ export function createStore(db) {
     saveExecutionMeta: db.prepare(`
       INSERT INTO executions (id, flow_id, flow_name, flow_type, project_id, business,
                               status, started_at, finished_at, summary_json,
-                              env_id, env_version, created_at, updated_at)
+                              env_id, env_version, suite_run_id, created_at, updated_at)
       VALUES (@id, @flowId, @flowName, @flowType, @projectId, @business,
               @status, @startedAt, @finishedAt, @summaryJson,
-              @envId, @envVersion, @createdAt, @updatedAt)
+              @envId, @envVersion, @suiteRunId, @createdAt, @updatedAt)
       ON CONFLICT(id) DO UPDATE SET
         flow_id      = COALESCE(excluded.flow_id, executions.flow_id),
         flow_name    = COALESCE(excluded.flow_name, executions.flow_name),
@@ -97,6 +104,7 @@ export function createStore(db) {
         summary_json = COALESCE(excluded.summary_json, executions.summary_json),
         env_id       = COALESCE(excluded.env_id, executions.env_id),
         env_version  = COALESCE(excluded.env_version, executions.env_version),
+        suite_run_id = COALESCE(excluded.suite_run_id, executions.suite_run_id),
         updated_at   = excluded.updated_at
     `),
 
@@ -195,9 +203,78 @@ export function createStore(db) {
       'DELETE FROM environment_secrets WHERE environment_id = ? AND key = ?'
     ),
     deleteSecrets: db.prepare('DELETE FROM environment_secrets WHERE environment_id = ?'),
+
+    // ---------- 套件（M2-2） ----------
+    listSuiteRows: db.prepare(`
+      SELECT id, project_id, name, description, flow_ids_json, strategy_json,
+             environment_id, created_at, updated_at
+      FROM suites ORDER BY rowid DESC
+    `),
+    getSuiteRow: db.prepare('SELECT * FROM suites WHERE id = ?'),
+    saveSuite: db.prepare(`
+      INSERT INTO suites (id, project_id, name, description, flow_ids_json, strategy_json,
+                          environment_id, created_at, updated_at)
+      VALUES (@id, @projectId, @name, @description, @flowIdsJson, @strategyJson,
+              @environmentId, @createdAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id     = excluded.project_id,
+        name           = excluded.name,
+        description    = excluded.description,
+        flow_ids_json  = excluded.flow_ids_json,
+        strategy_json  = excluded.strategy_json,
+        environment_id = excluded.environment_id,
+        updated_at     = excluded.updated_at
+    `),
+    deleteSuite: db.prepare('DELETE FROM suites WHERE id = ?'),
+
+    listSuiteRunRows: db.prepare(`
+      SELECT id, suite_id, suite_name, project_id, status, strategy_json,
+             env_id, env_version, summary_json, started_at, finished_at,
+             created_at, updated_at
+      FROM suite_runs ORDER BY rowid DESC
+    `),
+    listSuiteRunRowsBySuite: db.prepare(`
+      SELECT id, suite_id, suite_name, project_id, status, strategy_json,
+             env_id, env_version, summary_json, started_at, finished_at,
+             created_at, updated_at
+      FROM suite_runs WHERE suite_id = ? ORDER BY rowid DESC LIMIT ?
+    `),
+    getSuiteRunRow: db.prepare('SELECT * FROM suite_runs WHERE id = ?'),
+    saveSuiteRun: db.prepare(`
+      INSERT INTO suite_runs (id, suite_id, suite_name, project_id, status, strategy_json,
+                              env_id, env_version, summary_json, started_at, finished_at,
+                              created_at, updated_at)
+      VALUES (@id, @suiteId, @suiteName, @projectId, @status, @strategyJson,
+              @envId, @envVersion, @summaryJson, @startedAt, @finishedAt,
+              @createdAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET
+        status        = excluded.status,
+        summary_json  = COALESCE(excluded.summary_json, suite_runs.summary_json),
+        started_at    = COALESCE(excluded.started_at, suite_runs.started_at),
+        finished_at   = COALESCE(excluded.finished_at, suite_runs.finished_at),
+        env_id        = COALESCE(excluded.env_id, suite_runs.env_id),
+        env_version   = COALESCE(excluded.env_version, suite_runs.env_version),
+        updated_at    = excluded.updated_at
+    `),
+    deleteSuiteRuns: db.prepare('DELETE FROM suite_runs WHERE suite_id = ?'),
   }
 
   const flowRow = (row) => (row ? parse(row.graph_json, null) : null)
+  const executionRow = (row) => ({
+    id: row.id,
+    flowId: row.flow_id,
+    flowName: row.flow_name,
+    flowType: row.flow_type,
+    projectId: row.project_id,
+    business: row.business,
+    status: row.status,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    envId: row.env_id || null,
+    envVersion: row.env_version ?? null,
+    suiteRunId: row.suite_run_id || null,
+    summary: parse(row.summary_json, null),
+  })
   const projectRow = (row) => (row ? parse(row.data_json, null) : null)
   const bugRow = (row) => (row ? parse(row.data_json, null) : null)
   const environmentRow = (row) =>
@@ -211,6 +288,38 @@ export function createStore(db) {
           headers: parse(row.headers_json, {}),
           settings: parse(row.settings_json, {}),
           version: row.version,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        }
+      : null
+  const suiteRow = (row) =>
+    row
+      ? {
+          id: row.id,
+          projectId: row.project_id || null,
+          name: row.name,
+          description: row.description || '',
+          flowIds: parse(row.flow_ids_json, []),
+          strategy: parse(row.strategy_json, {}),
+          environmentId: row.environment_id || null,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        }
+      : null
+  const suiteRunRow = (row) =>
+    row
+      ? {
+          id: row.id,
+          suiteId: row.suite_id,
+          suiteName: row.suite_name || '',
+          projectId: row.project_id || null,
+          status: row.status,
+          strategy: parse(row.strategy_json, {}),
+          envId: row.env_id || null,
+          envVersion: row.env_version ?? null,
+          summary: parse(row.summary_json, null),
+          startedAt: row.started_at,
+          finishedAt: row.finished_at,
           createdAt: row.created_at,
           updatedAt: row.updated_at,
         }
@@ -244,6 +353,7 @@ export function createStore(db) {
       summaryJson: exec.summary ? JSON.stringify(exec.summary) : null,
       envId: exec.envId ?? null,
       envVersion: exec.envVersion ?? null,
+      suiteRunId: exec.suiteRunId ?? null,
       createdAt: now,
       updatedAt: now,
     })
@@ -304,20 +414,7 @@ export function createStore(db) {
 
     // ---------- 执行记录 ----------
     listExecutions() {
-      return s.listExecutions.all().map((row) => ({
-        id: row.id,
-        flowId: row.flow_id,
-        flowName: row.flow_name,
-        flowType: row.flow_type,
-        projectId: row.project_id,
-        business: row.business,
-        status: row.status,
-        startedAt: row.started_at,
-        finishedAt: row.finished_at,
-        envId: row.env_id || null,
-        envVersion: row.env_version ?? null,
-        summary: parse(row.summary_json, null),
-      }))
+      return s.listExecutions.all().map(executionRow)
     },
     saveExecutionMeta(meta) {
       const now = Date.now()
@@ -334,6 +431,7 @@ export function createStore(db) {
         summaryJson: meta.summary ? JSON.stringify(meta.summary) : null,
         envId: meta.envId ?? null,
         envVersion: meta.envVersion ?? null,
+        suiteRunId: meta.suiteRunId ?? null,
         createdAt: now,
         updatedAt: now,
       })
@@ -397,6 +495,7 @@ export function createStore(db) {
         finishedAt: row.finished_at,
         envId: row.env_id || null,
         envVersion: row.env_version ?? null,
+        suiteRunId: row.suite_run_id || null,
         summary: parse(row.summary_json, null),
         nodes: context.nodes || [],
         edges: context.edges || [],
@@ -536,6 +635,67 @@ export function createStore(db) {
     },
     deleteSecretRow(environmentId, key) {
       return s.deleteSecretRow.run(environmentId, key).changes > 0
+    },
+
+    // ---------- 套件（M2-2） ----------
+    listSuites() {
+      return s.listSuiteRows.all().map(suiteRow)
+    },
+    getSuite(id) {
+      return suiteRow(s.getSuiteRow.get(id))
+    },
+    saveSuite(suite) {
+      if (!suite.id) suite.id = crypto.randomUUID()
+      const now = Date.now()
+      if (!s.getSuiteRow.get(suite.id)) suite.createdAt = now
+      suite.updatedAt = now
+      s.saveSuite.run({
+        id: suite.id,
+        projectId: suite.projectId ?? null,
+        name: suite.name ?? '未命名套件',
+        description: suite.description || '',
+        flowIdsJson: JSON.stringify(suite.flowIds || []),
+        strategyJson: JSON.stringify(suite.strategy || {}),
+        environmentId: suite.environmentId ?? null,
+        createdAt: suite.createdAt,
+        updatedAt: now,
+      })
+      return suite
+    },
+    /** 删除套件定义与执行历史；流程执行记录（executions）保留，作为测试证据 */
+    deleteSuite(id) {
+      s.deleteSuiteRuns.run(id)
+      s.deleteSuite.run(id)
+    },
+    listSuiteRuns({ suiteId, limit = 20 } = {}) {
+      const n = Math.max(1, Math.min(Number(limit) || 20, 200))
+      const rows = suiteId ? s.listSuiteRunRowsBySuite.all(suiteId, n) : s.listSuiteRunRows.all().slice(0, n)
+      return rows.map(suiteRunRow)
+    },
+    getSuiteRun(id) {
+      return suiteRunRow(s.getSuiteRunRow.get(id))
+    },
+    saveSuiteRun(run) {
+      const now = Date.now()
+      s.saveSuiteRun.run({
+        id: run.id,
+        suiteId: run.suiteId,
+        suiteName: run.suiteName ?? null,
+        projectId: run.projectId ?? null,
+        status: run.status,
+        strategyJson: JSON.stringify(run.strategy || {}),
+        envId: run.envId ?? null,
+        envVersion: run.envVersion ?? null,
+        summaryJson: run.summary ? JSON.stringify(run.summary) : null,
+        startedAt: run.startedAt ?? null,
+        finishedAt: run.finishedAt ?? null,
+        createdAt: run.createdAt ?? now,
+        updatedAt: now,
+      })
+      return run
+    },
+    listExecutionsBySuiteRun(suiteRunId) {
+      return s.listExecutionsBySuiteRun.all(suiteRunId).map(executionRow)
     },
   }
 

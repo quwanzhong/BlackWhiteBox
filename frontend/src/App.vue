@@ -9,6 +9,7 @@ const activeMenu = computed(() => {
   if (p.startsWith('/projects')) return '/projects'
   if (p.startsWith('/flows')) return '/flows'
   if (p.startsWith('/environments')) return '/environments'
+  if (p.startsWith('/suites')) return '/suites'
   if (p.startsWith('/reports')) return '/reports'
   if (p.startsWith('/bugs')) return '/bugs'
   if (p.startsWith('/import')) return '/import'
@@ -38,6 +39,9 @@ const activeMenu = computed(() => {
         </el-menu-item>
         <el-menu-item index="/environments">
           <span class="menu-ico">⚙</span><span>环境管理</span>
+        </el-menu-item>
+        <el-menu-item index="/suites">
+          <span class="menu-ico">⛁</span><span>套件执行</span>
         </el-menu-item>
         <el-menu-item index="/reports">
           <span class="menu-ico">▤</span><span>执行报告</span>

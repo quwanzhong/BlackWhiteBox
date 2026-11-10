@@ -24,6 +24,8 @@ export class RunSession {
     this.flow = flow
     this.io = io
     this.executionId = opts.executionId || crypto.randomUUID()
+    // M2-2：套件执行时同时把事件广播到 suite:<suiteRunId>，套件页无需逐条订阅
+    this.suiteRunId = opts.suiteRunId || null
     // 环境快照只保留可公开字段；secrets 明文由 resolveEnvironment() 合并进 variables
     this.environment = opts.environment
       ? {
@@ -78,6 +80,7 @@ export class RunSession {
     this.pendingEvents.push(evt)
     this.scheduleFlush()
     this.io.to(this.room()).emit('exec_event', evt)
+    if (this.suiteRunId) this.io.to(`suite:${this.suiteRunId}`).emit('exec_event', evt)
     return evt
   }
 
@@ -138,6 +141,7 @@ export class RunSession {
       finishedAt: this.finishedAt,
       envId: this.environment?.id || null,
       envVersion: this.environment?.version ?? null,
+      suiteRunId: this.suiteRunId,
       summary: this.summary,
     }
   }

@@ -21,6 +21,8 @@ import bugsRouter from './routes/bugs.js'
 import fsRouter from './routes/fs.js'
 import statsRouter from './routes/stats.js'
 import environmentsRouter from './routes/environments.js'
+import suitesRouter from './routes/suites.js'
+import suiteRunsRouter from './routes/suite-runs.js'
 
 /** S6：请求体上限从 20 MB 收到 5 MB（1737 条接口的 OpenAPI 约 3.4 MB，留出余量） */
 export const BODY_LIMIT = '5mb'
@@ -133,6 +135,8 @@ export function createApp({ token = loadOrCreateToken(), originPort = Number(pro
   app.use('/api/fs', fsRouter)
   app.use('/api/stats', statsRouter)
   app.use('/api/environments', environmentsRouter)
+  app.use('/api/suites', suitesRouter)
+  app.use('/api/suite-runs', suiteRunsRouter)
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, name: '黑百盒测试平台', time: Date.now() })
@@ -178,7 +182,7 @@ export function createApp({ token = loadOrCreateToken(), originPort = Number(pro
   io.on('connection', (socket) => {
     // 房间名限定为 exec:<uuid>，避免客户端订阅任意房间
     socket.on('join', ({ room } = {}) => {
-      if (typeof room === 'string' && /^exec:[\w-]{1,64}$/.test(room)) socket.join(room)
+      if (typeof room === 'string' && /^(exec|suite):[\w-]{1,64}$/.test(room)) socket.join(room)
     })
     socket.on('leave', ({ room } = {}) => {
       if (typeof room === 'string' && room) socket.leave(room)

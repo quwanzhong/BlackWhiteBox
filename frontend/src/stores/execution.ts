@@ -6,7 +6,7 @@ import { getToken } from '../security/token'
 let socket: Socket | null = null
 let bound = false
 
-function getSocket(): Socket {
+export function getSocket(): Socket {
   if (!socket) {
     // S3：WebSocket 握手同样要令牌，否则任何页面都能订阅执行事件
     socket = io({

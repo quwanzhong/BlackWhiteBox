@@ -279,3 +279,54 @@ curl -X POST http://127.0.0.1:3300/api/flows/$FLOW_ID/run \
 - 按 `depth` 做横向分层布局（`x = 80 + depth * 300`，同层纵向排布）；
 - 丢弃自环、悬空边；
 - 生成 `whitebox` 类型流程。
+
+---
+
+## 7. 套件（Suite，M2-2）
+
+套件不复制流程，只保存「有序流程引用 + 执行策略 + 可选默认环境」，因此流程改动会立即体现在下一次套件执行中。
+
+```json
+{
+  "name": "登录 + 下单冒烟",
+  "projectId": "p-1",
+  "description": "发版前必跑",
+  "flowIds": ["f-login", "f-order-create", "f-order-list"],
+  "environmentId": "env-test",
+  "strategy": {
+    "concurrency": 3,
+    "retry": 1,
+    "retryDelayMs": 500,
+    "failFast": false
+  }
+}
+```
+
+| 字段 | 约束 | 语义 |
+|---|---|---|
+| `flowIds` | 1~200 条，自动去重并保留顺序 | 所有流程必须存在；指定 `projectId` 时只允许本项目流程 |
+| `concurrency` | 1~8，默认 3 | 同一时刻在跑的 Flow 数；每个 RunSession 变量域隔离 |
+| `retry` | 0~5，默认 0 | 单条 Flow 失败后的最大重试次数；重试后通过记 `flaky` |
+| `retryDelayMs` | 0~60000，默认 500 | 第 n 次重试前等待 `retryDelayMs × n` |
+| `failFast` | 默认 `false` | 某条 Flow 重试耗尽仍失败后，未开始的 Flow 统一 `skipped` |
+| `environmentId` | 可选 | 套件默认环境；执行时可用 `POST /api/suites/:id/run` 的 `environmentId` 临时覆盖 |
+
+执行语义：
+
+- 一次套件执行生成一条 `suite_runs`，每条 Flow 仍生成独立 `execution`，通过 `suite_run_id` 关联；
+- 策略与环境版本在执行开始时快照，之后改套件/删环境不影响历史；
+- `total = passed + failed + skipped` 恒成立；`flaky` 是 `passed` 的子集；
+- 停止只作用于仍在跑的 Flow，未开始的记为 `skipped`。
+
+```bash
+# 创建并执行套件
+curl -X POST http://127.0.0.1:3310/api/suites \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"冒烟","flowIds":["f1","f2"],"strategy":{"concurrency":2,"retry":1}}'
+curl -X POST http://127.0.0.1:3310/api/suites/<suiteId>/run \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}'
+
+# 查询进度 / 停止（前端同时通过 suite:<suiteRunId> 房间接收 suite_event）
+curl http://127.0.0.1:3310/api/suite-runs/<suiteRunId> -H "Authorization: Bearer $TOKEN"
+curl -X POST http://127.0.0.1:3310/api/suite-runs/<suiteRunId>/stop -H "Authorization: Bearer $TOKEN"
+```

@@ -102,6 +102,22 @@ export const api = {
   deleteEnvironmentSecret: (id: string, key: string): Promise<any> =>
     http.delete(`/environments/${id}/secrets/${encodeURIComponent(key)}`).then((r) => r.data),
 
+  // 套件（M2-2）：有序流程集合 + 执行策略，一键并发执行
+  listSuites: (projectId?: string): Promise<any[]> =>
+    http.get('/suites', { params: { projectId } }).then((r) => r.data),
+  getSuite: (id: string): Promise<any> => http.get(`/suites/${id}`).then((r) => r.data),
+  createSuite: (data: any): Promise<any> => http.post('/suites', data).then((r) => r.data),
+  updateSuite: (id: string, data: any): Promise<any> => http.put(`/suites/${id}`, data).then((r) => r.data),
+  deleteSuite: (id: string) => http.delete(`/suites/${id}`),
+  runSuite: (
+    id: string,
+    payload: { variables?: Record<string, any>; environmentId?: string } = {}
+  ): Promise<{ suiteRunId: string; suiteRun: any }> => http.post(`/suites/${id}/run`, payload).then((r) => r.data),
+  listSuiteRuns: (params?: { suiteId?: string; limit?: number }): Promise<any[]> =>
+    http.get('/suite-runs', { params }).then((r) => r.data),
+  getSuiteRun: (id: string): Promise<any> => http.get(`/suite-runs/${id}`).then((r) => r.data),
+  stopSuiteRun: (id: string): Promise<any> => http.post(`/suite-runs/${id}/stop`).then((r) => r.data),
+
   // 缺陷
   listBugs: (params?: any): Promise<any[]> => http.get('/bugs', { params }).then((r) => r.data),
   createBug: (data: any): Promise<any> => http.post('/bugs', data).then((r) => r.data),
