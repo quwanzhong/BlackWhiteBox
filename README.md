@@ -102,8 +102,9 @@ npm run ci              # lint → test:coverage → test:frontend → verify �
 当前本地（Windows）为行 **96.30%** / 分支 **80.80%** / 函数 **95.06%**；路由与导入器等胶水层由
 `backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 31 项 + 功能域 82 项 / 12 个场景）。
 
-CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率门禁与场景验收，并断言构建产物
-`frontend/dist/index.html` 不含令牌占位符（生产令牌只能由后端在响应时注入）。
+CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑后端 lint、覆盖率门禁与场景验收，前端 lint → `npm run test`
+（事件同步时序回归 5 例）→ build，并断言构建产物 `frontend/dist/index.html` 不含令牌占位符
+（生产令牌只能由后端在响应时注入）。最近一次：run `42788561116`（sha `cc714b8`）success。
 
 ### 目录
 
