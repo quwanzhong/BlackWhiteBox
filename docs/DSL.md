@@ -175,9 +175,50 @@ $.data.status == "PAID" && $.data.amount > 0
 }
 ```
 
-- 变量优先级：内置 `variables` < 执行时传入变量 < 运行中提取的变量；
-- 提取表达式取不到值时不会覆盖已有变量；
-- 整个执行会话共享一份变量表，报告里会附带最终变量快照。
+### 4.1 优先级（低 → 高）
+
+| 层级 | 来源 | 说明 |
+| --- | --- | --- |
+| 1 | `flow.variables` | 流程自带默认值，随 DSL 保存 |
+| 2 | Environment | 环境 `variables` 与 `secrets` 合并（执行时在内存解密） |
+| 3 | 执行时传入 `variables` | `POST /api/flows/:id/run` 请求体 |
+| 4 | 运行中 `extract` | 节点执行后提取，优先级最高 |
+
+- 同级后写覆盖先写；`extract` 取不到值时不覆盖已有变量；
+- 替换规则（`engine/jsonpath.js#substitute`）：`{{key}}` 独占整个字符串时保留原始类型（数字/布尔/对象），否则按字符串拼接；
+- 整个执行会话共享一份变量表，报告附带最终变量快照（secrets 已打码）。
+
+### 4.2 Environment（环境）
+
+一个环境对应一套被测部署，通过「环境管理」页或 `/api/environments` 维护：
+
+| 字段 | 作用 |
+| --- | --- |
+| `baseUrl` | 节点 `url` 写相对路径时自动拼接；绝对地址（`http(s)://…`）原样使用；禁止内嵌账号密码 |
+| `variables` | 普通变量，明文保存，可进报告与导出包 |
+| `headers` | 全局默认请求头，节点同名头（大小写不敏感）覆盖；头值同样支持 `{{var}}` |
+| `secrets` | 敏感值（token、密码），AES-256-GCM 加密落库，接口只回键名 |
+| `version` | 每次变更 +1；执行记录写入 `env_id` + `env_version`，可复现「当时用的是哪版环境」 |
+
+约束：
+
+- 键名须匹配 `[A-Za-z_][A-Za-z0-9_]{0,63}`（`{{ }}` 插值只认 `\w+`）；
+- 同一环境内 `variables` 与 `secrets` 键名冲突 → `400 ENV_KEY_CONFLICT`，避免「到底取哪个值」的歧义；
+- 环境挂到项目后只能用于该项目的流程；`projectId` 为空表示全局环境，跨项目使用 → `400 ENV_PROJECT_MISMATCH`；
+- 主密钥优先取 `HEIBAIHE_MASTER_KEY`（64 位 hex 或 32 字节 base64），否则自动生成 `DATA_DIR/.master.key`；
+- secrets 明文只在执行进程内存中出现一次：事件流、步骤、上下文快照、执行详情落库前，按明文值替换为 `***`（长度 < 3 的值跳过，避免误伤正常文本）。
+
+```bash
+# 新建环境（secrets 可与其他字段一起提交，只在这一次请求里出现）
+curl -X POST http://127.0.0.1:3300/api/environments \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"测试环境","baseUrl":"http://127.0.0.1:8080","variables":{"region":"cn"},"secrets":{"apiKey":"sk-xxx"}}'
+
+# 执行时选择环境
+curl -X POST http://127.0.0.1:3300/api/flows/$FLOW_ID/run \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"environmentId":"<env-id>","variables":{"token":"运行时覆盖值"}}'
+```
 
 ---
 

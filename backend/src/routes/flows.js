@@ -3,6 +3,7 @@ import crypto from 'node:crypto'
 import { store } from '../store.js'
 import { RunSession } from '../engine/scheduler.js'
 import { sessions } from '../engine/registry.js'
+import { EnvironmentError, resolveEnvironment } from '../environments/service.js'
 
 const router = Router()
 
@@ -103,7 +104,31 @@ router.post('/:id/run', (req, res) => {
   if (!flow) return res.status(404).json({ error: '流程不存在' })
   if (!flow.nodes?.length) return res.status(400).json({ error: '流程没有节点，无法执行' })
 
-  const session = new RunSession(flow, req.io, { variables: req.body?.variables })
+  // 环境解析失败要 400/404（含错误码），不能 500：这是用户可选参数
+  let environment = null
+  const environmentId = req.body?.environmentId
+  if (environmentId != null && environmentId !== '') {
+    try {
+      environment = resolveEnvironment(String(environmentId))
+    } catch (err) {
+      if (err instanceof EnvironmentError) {
+        return res.status(err.status).json({ error: err.message, code: err.code })
+      }
+      throw err
+    }
+    if (environment.projectId && flow.projectId && environment.projectId !== flow.projectId) {
+      return res.status(400).json({
+        error: `环境「${environment.name}」属于其他项目，不能用于该流程`,
+        code: 'ENV_PROJECT_MISMATCH',
+      })
+    }
+  }
+
+  const variables = req.body?.variables
+  const session = new RunSession(flow, req.io, {
+    variables: variables && typeof variables === 'object' && !Array.isArray(variables) ? variables : undefined,
+    environment,
+  })
   sessions.set(session.executionId, session)
   session.start().catch((err) => {
     console.error('[execution] 未捕获异常：', err)

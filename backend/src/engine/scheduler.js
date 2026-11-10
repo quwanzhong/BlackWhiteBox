@@ -5,8 +5,13 @@ import { resolvePath, resolveTokens } from './jsonpath.js'
 import { runChecks } from './validators.js'
 import { sessions } from './registry.js'
 import { evaluateCondition } from '../security/expression.js'
+import { maskDeep } from '../environments/service.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
 
 /**
  * 一次流程执行会话：
@@ -19,7 +24,31 @@ export class RunSession {
     this.flow = flow
     this.io = io
     this.executionId = opts.executionId || crypto.randomUUID()
-    this.vars = { ...(flow.variables || {}), ...(opts.variables || {}) }
+    // 环境快照只保留可公开字段；secrets 明文由 resolveEnvironment() 合并进 variables
+    this.environment = opts.environment
+      ? {
+          id: opts.environment.id,
+          name: opts.environment.name,
+          version: opts.environment.version,
+          projectId: opts.environment.projectId || null,
+          baseUrl: opts.environment.baseUrl || '',
+          headers: opts.environment.headers || {},
+          variables: opts.environment.variables || {},
+        }
+      : null
+    // 变量优先级（低 → 高）：flow.variables < Environment（含 secrets）
+    //   < 执行时传入 variables < 运行中 extract（见 jsonpath/DSL §4）
+    this.vars = {
+      ...(flow.variables || {}),
+      ...(this.environment?.variables || {}),
+      ...(isPlainObject(opts.variables) ? opts.variables : {}),
+    }
+    this.defaultHeaders = this.environment?.headers || {}
+    this.baseUrl = this.environment?.baseUrl || ''
+    // 掩码用的明文值：只在内存，落库/事件/详情统一替换为 ***（S7）
+    this.secretValues = (opts.environment?.secretValues || []).filter(
+      (value) => typeof value === 'string' || typeof value === 'number'
+    )
     this.steps = []
     this.events = []
     this.last = null // 上一个节点的响应（供条件表达式使用）
@@ -43,12 +72,28 @@ export class RunSession {
   }
 
   emit(type, payload = {}) {
-    const evt = { executionId: this.executionId, type, payload, ts: Date.now() }
+    // 事件会进 WebSocket、落库、报告：统一先掩码，避免 secret 明文外泄
+    const evt = { executionId: this.executionId, type, payload: this.mask(payload), ts: Date.now() }
     this.events.push(evt)
     this.pendingEvents.push(evt)
     this.scheduleFlush()
     this.io.to(this.room()).emit('exec_event', evt)
     return evt
+  }
+
+  /** secret 明文值掩码（递归，只替换字符串值） */
+  mask(value) {
+    return maskDeep(value, this.secretValues)
+  }
+
+  /** 环境快照（落库/展示用，永不含 secrets 明文） */
+  envSnapshot() {
+    if (!this.environment) return null
+    return {
+      ...this.environment,
+      variables: this.mask(this.environment.variables),
+      headers: this.mask(this.environment.headers),
+    }
   }
 
   scheduleFlush() {
@@ -91,6 +136,8 @@ export class RunSession {
       status: this.status,
       startedAt: this.startedAt,
       finishedAt: this.finishedAt,
+      envId: this.environment?.id || null,
+      envVersion: this.environment?.version ?? null,
       summary: this.summary,
     }
   }
@@ -101,25 +148,27 @@ export class RunSession {
       nodes: this.flow.nodes || [],
       edges: this.flow.edges || [],
       // seq 只服务于"同一节点覆盖同一行"，对外契约与落库后的 step 保持一致
-      steps: this.steps.map(({ seq: _seq, ...step }) => step),
+      steps: this.steps.map(({ seq: _seq, ...step }) => this.mask(step)),
       events: this.events,
-      vars: this.vars,
+      vars: this.mask(this.vars),
+      environment: this.envSnapshot(),
     }
   }
 
-  /** 上下文（nodes/edges/vars）只在开始/结束/停止时写，执行热路径不碰 */
+  /** 上下文（nodes/edges/vars/环境快照）只在开始/结束/停止时写，执行热路径不碰 */
   saveContext() {
     store.saveExecutionContext(this.executionId, {
       nodes: this.flow.nodes || [],
       edges: this.flow.edges || [],
-      vars: this.vars,
+      vars: this.mask(this.vars),
+      environment: this.envSnapshot(),
     })
   }
 
   /** 步骤写库：创建与每次状态变化都调用，同一 seq 覆盖同一行（成本与历史长度无关） */
   saveStep(step) {
     if (!step.seq) step.seq = ++this.stepSeq
-    store.saveExecutionStep(this.executionId, step)
+    store.saveExecutionStep(this.executionId, this.mask(step))
     return step
   }
 
@@ -276,7 +325,12 @@ export class RunSession {
         }
         step.status = pass ? 'passed' : 'failed'
       } else {
-        const result = await executeNode(node, { vars: this.vars, last: this.last })
+        const result = await executeNode(node, {
+          vars: this.vars,
+          last: this.last,
+          baseUrl: this.baseUrl,
+          defaultHeaders: this.defaultHeaders,
+        })
         step.request = result.request
         step.actual = {
           status: result.status,

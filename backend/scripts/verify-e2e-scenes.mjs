@@ -8,6 +8,7 @@
  *   场景 4  白盒执行：导入的调用链流程直接执行 + 人工确认闭环
  *   场景 5  缺陷记录：从执行步骤提缺陷 → 过滤 → 状态流转 → 统计 → 删除
  *   场景 6  统计面板：各计数与列表数据一致
+ *   场景 7  环境与密钥：CRUD → 变量优先级 → baseUrl/Header → secrets 不落明文 → 错误码
  *
  * 环境与 verify-m1-3 同口径：临时库 + 真实端口 + token；Apifox 侧只依赖本机缓存文件
  * （oas-cache.json，MCP 拉取的产物格式），不依赖外网。
@@ -50,6 +51,16 @@ const stub = http.createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(chunk)
     const raw = Buffer.concat(chunks).toString('utf8')
     return send(201, { code: 0, data: { method: req.method, body: raw ? JSON.parse(raw) : null } })
+  }
+  if (url.pathname === '/api/env-echo') {
+    return send(200, {
+      code: 0,
+      data: {
+        query: Object.fromEntries(url.searchParams),
+        headers: req.headers,
+        nextToken: 'extract-scene7',
+      },
+    })
   }
   send(404, { code: 404 })
 })
@@ -395,6 +406,147 @@ check(
   `rate=${stats.successRate}% recent=${stats.recent.length}`
 )
 
+// ================================================================ 场景 7 · 环境与密钥（M2-1）
+const SECRET7 = 'scene7-top-secret-value'
+const envRes = await post('/api/environments', {
+  name: '场景7 测试环境',
+  projectId: project.id,
+  baseUrl: stubBase,
+  variables: { scene: 'env-scene', token: 'env-token-scene7' },
+  headers: { 'X-Scene': 'scene-7', Authorization: 'Bearer {{sceneSecret}}' },
+  secrets: { sceneSecret: SECRET7 },
+})
+const env = await envRes.json()
+check(
+  '7.1 创建环境：version=1、只回 secretKeys、响应不含密钥明文',
+  envRes.status === 200 &&
+    env.version === 1 &&
+    env.baseUrl === stubBase &&
+    env.secretKeys?.includes('sceneSecret') &&
+    !JSON.stringify(env).includes(SECRET7),
+  `id=${env.id?.slice(0, 8)} keys=${env.secretKeys?.length}`
+)
+
+const envList = await (await get(`/api/environments?projectId=${project.id}`)).json()
+const envDetail = await (await get(`/api/environments/${env.id}`)).json()
+check(
+  '7.2 列表按项目过滤 + 详情不回显明文',
+  envList.length === 1 && envList[0].id === env.id && !JSON.stringify(envDetail).includes(SECRET7)
+)
+
+const envPreview = await (await get(`/api/environments/${env.id}/resolve`)).json()
+check(
+  '7.3 预览：普通变量可读、secrets 打码为 ***、baseUrl 一并返回',
+  envPreview.resolved?.variables?.scene === 'env-scene' &&
+    envPreview.resolved?.variables?.sceneSecret === '***' &&
+    envPreview.resolved?.baseUrl === stubBase &&
+    !JSON.stringify(envPreview).includes(SECRET7)
+)
+
+const scene7Flow = await (
+  await post('/api/flows', {
+    name: '场景7 环境优先级',
+    type: 'blackbox',
+    projectId: project.id,
+    variables: { scene: 'flow-scene', token: 'flow-token-scene7' },
+    nodes: [
+      {
+        id: 'n1',
+        name: '环境变量与密钥',
+        action: {
+          type: 'http',
+          method: 'GET',
+          url: '/api/env-echo?scene={{scene}}&token={{token}}&secret={{sceneSecret}}',
+          headers: { 'X-Node': 'scene7-node' },
+        },
+        expected: { status: 200, checks: [] },
+        extract: { token: '$.data.nextToken' },
+      },
+      {
+        id: 'n2',
+        name: '提取变量覆盖',
+        action: { type: 'http', method: 'GET', url: '/api/env-echo?token={{token}}' },
+        expected: { status: 200, checks: [] },
+      },
+    ],
+    edges: [{ id: 'e1', from: 'n1', to: 'n2' }],
+  })
+).json()
+const scene7Run = await (
+  await post(`/api/flows/${scene7Flow.id}/run`, {
+    environmentId: env.id,
+    variables: { token: 'runtime-token-scene7' },
+  })
+).json()
+const scene7Detail = await waitDone(scene7Run.executionId)
+const [scene7Step1, scene7Step2] = scene7Detail.steps
+const scene7Text = JSON.stringify(scene7Detail)
+check(
+  '7.4 变量优先级：flow < Environment < 执行时传入；extract 最高',
+  scene7Detail.status === 'passed' &&
+    scene7Step1.request?.url?.includes('scene=env-scene') &&
+    scene7Step1.request?.url?.includes('token=runtime-token-scene7') &&
+    scene7Step2.request?.url?.includes('token=extract-scene7'),
+  `s1=${scene7Step1?.request?.url} s2=${scene7Step2?.request?.url}`
+)
+check(
+  '7.5 baseUrl 拼接相对路径 + 环境 Header 与节点头合并（含 secret 头掩码）',
+  scene7Step1.actual?.data?.data?.headers?.['x-scene'] === 'scene-7' &&
+    scene7Step1.actual?.data?.data?.headers?.['x-node'] === 'scene7-node' &&
+    scene7Step1.actual?.data?.data?.headers?.authorization === 'Bearer ***',
+  `headers=${JSON.stringify(scene7Step1?.actual?.data?.data?.headers || {})}`
+)
+check(
+  '7.6 执行记录绑定环境版本，落库/事件/变量快照均不含密钥明文',
+  scene7Detail.envId === env.id &&
+    scene7Detail.envVersion === env.version &&
+    scene7Detail.environment?.name === '场景7 测试环境' &&
+    scene7Detail.environment?.variables?.sceneSecret === '***' &&
+    scene7Detail.vars?.sceneSecret === '***' &&
+    scene7Step1.request?.url?.includes('secret=***') &&
+    !scene7Text.includes(SECRET7),
+  `envId=${scene7Detail.envId?.slice(0, 8)} v=${scene7Detail.envVersion}`
+)
+
+const dbFiles = [path.join(DIR, 'heibaihe.db'), path.join(DIR, 'heibaihe.db-wal'), path.join(DIR, 'heibaihe.db-shm')]
+  .filter((file) => fs.existsSync(file))
+const dbBytes = dbFiles.reduce((acc, file) => Buffer.concat([acc, fs.readFileSync(file)]), Buffer.alloc(0))
+check(
+  '7.7 secrets 密文落库：SQLite 文件无明文；主密钥文件已生成',
+  env.secretKeys.length === 1 &&
+    !dbBytes.toString('utf8').includes(SECRET7) &&
+    fs.existsSync(path.join(DIR, '.master.key'))
+)
+
+const dupEnv = await post('/api/environments', { name: '场景7 测试环境', projectId: project.id })
+const badKeyEnv = await post('/api/environments', { name: '场景7 坏键', variables: { 'bad key': 1 } })
+const conflictEnv = await post('/api/environments', {
+  name: '场景7 冲突',
+  variables: { same: 'a' },
+  secrets: { same: 'b' },
+})
+const ghostEnvRun = await post(`/api/flows/${scene7Flow.id}/run`, { environmentId: 'ghost-env' })
+check(
+  '7.8 错误路径：重名/非法键/键冲突 400，未知环境执行 404',
+  dupEnv.status === 400 &&
+    (await dupEnv.json()).code === 'ENV_NAME_CONFLICT' &&
+    badKeyEnv.status === 400 &&
+    (await badKeyEnv.json()).code === 'ENV_BAD_KEY' &&
+    conflictEnv.status === 400 &&
+    (await conflictEnv.json()).code === 'ENV_KEY_CONFLICT' &&
+    ghostEnvRun.status === 404 &&
+    (await ghostEnvRun.json()).code === 'ENV_NOT_FOUND'
+)
+
+const envAfterSecretDelete = await (await del(`/api/environments/${env.id}/secrets/sceneSecret`)).json()
+const envGone = await del(`/api/environments/${env.id}`)
+check(
+  '7.9 删除密钥后 secretKeys 清空；删除环境后详情 404',
+  envAfterSecretDelete.secretKeys.length === 0 &&
+    envGone.status === 200 &&
+    (await get(`/api/environments/${env.id}`)).status === 404
+)
+
 // ---------------------------------------------------------------- 汇总
 console.log('\n结论')
 console.log('-'.repeat(78))
@@ -404,7 +556,7 @@ for (const r of results) {
   console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? `  —  ${r.detail}` : ''}`)
 }
 console.log('-'.repeat(78))
-console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，6 个场景）`)
+console.log(`结论：${failed === 0 ? '全部通过' : `${failed} 项失败`}（${results.length} 项检查，7 个场景）`)
 
 await new Promise((resolve) => appCtx.io.close(resolve))
 await new Promise((resolve) => appCtx.server.close(resolve))

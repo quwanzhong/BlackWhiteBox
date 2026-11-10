@@ -20,6 +20,7 @@ import projectsRouter from './routes/projects.js'
 import bugsRouter from './routes/bugs.js'
 import fsRouter from './routes/fs.js'
 import statsRouter from './routes/stats.js'
+import environmentsRouter from './routes/environments.js'
 
 /** S6：请求体上限从 20 MB 收到 5 MB（1737 条接口的 OpenAPI 约 3.4 MB，留出余量） */
 export const BODY_LIMIT = '5mb'
@@ -131,6 +132,7 @@ export function createApp({ token = loadOrCreateToken(), originPort = Number(pro
   app.use('/api/bugs', bugsRouter)
   app.use('/api/fs', fsRouter)
   app.use('/api/stats', statsRouter)
+  app.use('/api/environments', environmentsRouter)
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, name: '黑百盒测试平台', time: Date.now() })

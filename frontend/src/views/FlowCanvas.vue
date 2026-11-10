@@ -27,10 +27,34 @@ const container = ref<HTMLElement>()
 const drawerVisible = ref(false)
 const editingNode = ref<any>(null)
 const summaryVisible = ref(false)
+/** 执行环境（M2-1）：同项目环境 + 全局环境；选择结果按流程记忆 */
+const environments = ref<any[]>([])
+const environmentId = ref('')
+
+const ENV_STORAGE_PREFIX = 'heibaihe.env.'
 
 let graph: any = null
 
 const running = computed(() => exec.running && exec.flowId === flow.value?.id)
+
+async function loadEnvironments(target: FlowDsl) {
+  try {
+    const all = await api.listEnvironments()
+    environments.value = all.filter((env) => !env.projectId || env.projectId === target.projectId)
+    const saved = target.id ? localStorage.getItem(`${ENV_STORAGE_PREFIX}${target.id}`) : ''
+    if (saved && environments.value.some((env) => env.id === saved)) environmentId.value = saved
+  } catch {
+    environments.value = []
+  }
+}
+
+function selectEnvironment(id: string) {
+  environmentId.value = id
+  if (!flow.value?.id) return
+  const key = `${ENV_STORAGE_PREFIX}${flow.value.id}`
+  if (id) localStorage.setItem(key, id)
+  else localStorage.removeItem(key)
+}
 
 onMounted(async () => {
   try {
@@ -43,6 +67,7 @@ onMounted(async () => {
   // 若上次执行属于其它流程，清空执行视图，避免状态串场
   if (!exec.running && exec.flowId !== flow.value.id) exec.reset()
 
+  await loadEnvironments(flow.value)
   await nextTick()
   graph = createGraph(container.value!)
   renderFlow(graph, flow.value)
@@ -94,7 +119,9 @@ async function runFlow() {
   }
   await save(true)
   try {
-    const { executionId } = await api.runFlow(flow.value.id!)
+    const { executionId } = await api.runFlow(flow.value.id!, {
+      environmentId: environmentId.value || undefined,
+    })
     exec.connect(executionId, flow.value.name, flow.value.id!)
     summaryVisible.value = false
     selectedId.value = ''
@@ -235,6 +262,24 @@ async function removeNode() {
         <el-button @click="openAddNode">＋ 添加节点</el-button>
         <el-button type="primary" plain @click="save()">保存</el-button>
         <el-divider direction="vertical" />
+        <el-select
+          v-model="environmentId"
+          class="env-select"
+          clearable
+          placeholder="不使用环境"
+          @change="selectEnvironment"
+        >
+          <el-option
+            v-for="env in environments"
+            :key="env.id"
+            :label="env.name"
+            :value="env.id"
+          >
+            <span>{{ env.name }}</span>
+            <span class="env-option-url">{{ env.baseUrl || '未设置 baseUrl' }}</span>
+          </el-option>
+        </el-select>
+        <el-button text size="small" @click="router.push('/environments')">管理</el-button>
         <el-button type="success" :disabled="running" @click="runFlow">▶ 执行流程</el-button>
         <el-button v-if="exec.status === 'paused'" type="warning" @click="togglePause">继续</el-button>
         <el-button v-else :disabled="!running" @click="togglePause">暂停</el-button>

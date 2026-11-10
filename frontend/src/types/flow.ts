@@ -47,6 +47,9 @@ export interface FlowDsl {
   name: string
   type: FlowType
   description?: string
+  /** 所属项目（可选）：环境只能用于同项目或全局环境 */
+  projectId?: string
+  business?: string
   variables?: Record<string, any>
   nodes: FlowNode[]
   edges: FlowEdge[]

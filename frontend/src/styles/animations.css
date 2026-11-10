@@ -87,6 +87,8 @@ body {
 .fp-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .flow-name-input { width: 260px; }
 .flow-name-input .el-input__inner { font-weight: 600; }
+.env-select { width: 150px; }
+.env-option-url { float: right; color: #909399; font-size: 11px; margin-left: 12px; }
 .fp-actions { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .fp-statusbar {
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;

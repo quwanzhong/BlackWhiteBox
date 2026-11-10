@@ -52,7 +52,7 @@ export function createStore(db) {
     // ---------- 执行记录 ----------
     listExecutions: db.prepare(`
       SELECT id, flow_id, flow_name, flow_type, project_id, business,
-             status, started_at, finished_at, summary_json
+             status, started_at, finished_at, summary_json, env_id, env_version
       FROM executions ORDER BY rowid DESC
     `),
     getExecutionRow: db.prepare('SELECT * FROM executions WHERE id = ?'),
@@ -80,9 +80,11 @@ export function createStore(db) {
     setEventSeq: db.prepare('UPDATE executions SET event_seq = ?, updated_at = ? WHERE id = ?'),
     saveExecutionMeta: db.prepare(`
       INSERT INTO executions (id, flow_id, flow_name, flow_type, project_id, business,
-                              status, started_at, finished_at, summary_json, created_at, updated_at)
+                              status, started_at, finished_at, summary_json,
+                              env_id, env_version, created_at, updated_at)
       VALUES (@id, @flowId, @flowName, @flowType, @projectId, @business,
-              @status, @startedAt, @finishedAt, @summaryJson, @createdAt, @updatedAt)
+              @status, @startedAt, @finishedAt, @summaryJson,
+              @envId, @envVersion, @createdAt, @updatedAt)
       ON CONFLICT(id) DO UPDATE SET
         flow_id      = COALESCE(excluded.flow_id, executions.flow_id),
         flow_name    = COALESCE(excluded.flow_name, executions.flow_name),
@@ -93,6 +95,8 @@ export function createStore(db) {
         started_at   = COALESCE(excluded.started_at, executions.started_at),
         finished_at  = COALESCE(excluded.finished_at, executions.finished_at),
         summary_json = COALESCE(excluded.summary_json, executions.summary_json),
+        env_id       = COALESCE(excluded.env_id, executions.env_id),
+        env_version  = COALESCE(excluded.env_version, executions.env_version),
         updated_at   = excluded.updated_at
     `),
 
@@ -143,11 +147,74 @@ export function createStore(db) {
         updated_at = excluded.updated_at
     `),
     deleteBug: db.prepare('DELETE FROM bugs WHERE id = ?'),
+
+    // ---------- 环境（M2-1）----------
+    listEnvironmentRows: db.prepare(`
+      SELECT id, project_id, name, base_url, variables_json, headers_json,
+             settings_json, version, created_at, updated_at
+      FROM environments ORDER BY rowid DESC
+    `),
+    getEnvironmentRow: db.prepare(`
+      SELECT id, project_id, name, base_url, variables_json, headers_json,
+             settings_json, version, created_at, updated_at
+      FROM environments WHERE id = ?
+    `),
+    saveEnvironment: db.prepare(`
+      INSERT INTO environments (id, project_id, name, base_url, variables_json, headers_json,
+                                settings_json, version, created_at, updated_at)
+      VALUES (@id, @projectId, @name, @baseUrl, @variablesJson, @headersJson,
+              @settingsJson, @version, @createdAt, @updatedAt)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id     = excluded.project_id,
+        name           = excluded.name,
+        base_url       = excluded.base_url,
+        variables_json = excluded.variables_json,
+        headers_json   = excluded.headers_json,
+        settings_json  = excluded.settings_json,
+        version        = excluded.version,
+        updated_at     = excluded.updated_at
+    `),
+    deleteEnvironmentRow: db.prepare('DELETE FROM environments WHERE id = ?'),
+    listSecretRows: db.prepare(
+      'SELECT key, value_blob FROM environment_secrets WHERE environment_id = ? ORDER BY key'
+    ),
+    listSecretKeys: db.prepare(
+      'SELECT key FROM environment_secrets WHERE environment_id = ? ORDER BY key'
+    ),
+    getSecretRow: db.prepare(
+      'SELECT value_blob FROM environment_secrets WHERE environment_id = ? AND key = ?'
+    ),
+    saveSecretRow: db.prepare(`
+      INSERT INTO environment_secrets (environment_id, key, value_blob, created_at, updated_at)
+      VALUES (@environmentId, @key, @valueBlob, @now, @now)
+      ON CONFLICT(environment_id, key) DO UPDATE SET
+        value_blob = excluded.value_blob,
+        updated_at = excluded.updated_at
+    `),
+    deleteSecretRow: db.prepare(
+      'DELETE FROM environment_secrets WHERE environment_id = ? AND key = ?'
+    ),
+    deleteSecrets: db.prepare('DELETE FROM environment_secrets WHERE environment_id = ?'),
   }
 
   const flowRow = (row) => (row ? parse(row.graph_json, null) : null)
   const projectRow = (row) => (row ? parse(row.data_json, null) : null)
   const bugRow = (row) => (row ? parse(row.data_json, null) : null)
+  const environmentRow = (row) =>
+    row
+      ? {
+          id: row.id,
+          projectId: row.project_id || null,
+          name: row.name,
+          baseUrl: row.base_url || '',
+          variables: parse(row.variables_json, {}),
+          headers: parse(row.headers_json, {}),
+          settings: parse(row.settings_json, {}),
+          version: row.version,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        }
+      : null
 
   /** 批量追加事件：seq 由 executions.event_seq 统一分配，保证执行内严格自增 */
   const appendEvents = db.transaction((executionId, events) => {
@@ -175,11 +242,18 @@ export function createStore(db) {
       startedAt: exec.startedAt ?? null,
       finishedAt: exec.finishedAt ?? null,
       summaryJson: exec.summary ? JSON.stringify(exec.summary) : null,
+      envId: exec.envId ?? null,
+      envVersion: exec.envVersion ?? null,
       createdAt: now,
       updatedAt: now,
     })
     s.saveExecutionContext.run(
-      JSON.stringify({ nodes: exec.nodes || [], edges: exec.edges || [], vars: exec.vars || {} }),
+      JSON.stringify({
+        nodes: exec.nodes || [],
+        edges: exec.edges || [],
+        vars: exec.vars || {},
+        environment: exec.environment || null,
+      }),
       now,
       exec.id
     )
@@ -240,6 +314,8 @@ export function createStore(db) {
         status: row.status,
         startedAt: row.started_at,
         finishedAt: row.finished_at,
+        envId: row.env_id || null,
+        envVersion: row.env_version ?? null,
         summary: parse(row.summary_json, null),
       }))
     },
@@ -256,6 +332,8 @@ export function createStore(db) {
         startedAt: meta.startedAt ?? null,
         finishedAt: meta.finishedAt ?? null,
         summaryJson: meta.summary ? JSON.stringify(meta.summary) : null,
+        envId: meta.envId ?? null,
+        envVersion: meta.envVersion ?? null,
         createdAt: now,
         updatedAt: now,
       })
@@ -263,10 +341,15 @@ export function createStore(db) {
     saveExecutionDetail(exec) {
       replaceDetail(exec)
     },
-    /** 执行上下文（nodes/edges/vars）每次执行只写一次，避免每节点重写 */
+    /** 执行上下文（nodes/edges/vars/环境快照）每次执行只写一次，避免每节点重写 */
     saveExecutionContext(executionId, context) {
       return s.saveExecutionContext.run(
-        JSON.stringify({ nodes: context?.nodes || [], edges: context?.edges || [], vars: context?.vars || {} }),
+        JSON.stringify({
+          nodes: context?.nodes || [],
+          edges: context?.edges || [],
+          vars: context?.vars || {},
+          environment: context?.environment || null,
+        }),
         Date.now(),
         executionId
       ).changes
@@ -312,12 +395,15 @@ export function createStore(db) {
         status: row.status,
         startedAt: row.started_at,
         finishedAt: row.finished_at,
+        envId: row.env_id || null,
+        envVersion: row.env_version ?? null,
         summary: parse(row.summary_json, null),
         nodes: context.nodes || [],
         edges: context.edges || [],
         steps,
         events,
         vars: context.vars || {},
+        environment: context.environment || null,
       }
     },
 
@@ -402,6 +488,54 @@ export function createStore(db) {
     },
     deleteBug(id) {
       s.deleteBug.run(id)
+    },
+
+    // ---------- 环境（M2-1） ----------
+    listEnvironmentRows() {
+      return s.listEnvironmentRows.all().map(environmentRow)
+    },
+    getEnvironmentRow(id) {
+      return environmentRow(s.getEnvironmentRow.get(id))
+    },
+    saveEnvironment(env) {
+      s.saveEnvironment.run({
+        id: env.id,
+        projectId: env.projectId ?? null,
+        name: env.name,
+        baseUrl: env.baseUrl || '',
+        variablesJson: JSON.stringify(env.variables || {}),
+        headersJson: JSON.stringify(env.headers || {}),
+        settingsJson: JSON.stringify(env.settings || {}),
+        version: env.version || 1,
+        createdAt: env.createdAt ?? Date.now(),
+        updatedAt: env.updatedAt ?? Date.now(),
+      })
+      return env
+    },
+    /** 删除环境时一并清空密钥行（SQLite 未开启外键，需要显式级联） */
+    deleteEnvironment(id) {
+      s.deleteSecrets.run(id)
+      s.deleteEnvironmentRow.run(id)
+    },
+    listSecretRows(environmentId) {
+      return s.listSecretRows.all(environmentId).map((row) => ({
+        key: row.key,
+        valueBlob: row.value_blob,
+      }))
+    },
+    listSecretKeys(environmentId) {
+      return s.listSecretKeys.all(environmentId).map((row) => row.key)
+    },
+    getSecretRow(environmentId, key) {
+      const row = s.getSecretRow.get(environmentId, key)
+      return row ? { key, valueBlob: row.value_blob } : null
+    },
+    saveSecretRow(environmentId, key, valueBlob) {
+      s.saveSecretRow.run({ environmentId, key, valueBlob, now: Date.now() })
+      return key
+    },
+    deleteSecretRow(environmentId, key) {
+      return s.deleteSecretRow.run(environmentId, key).changes > 0
     },
   }
 

@@ -25,6 +25,11 @@ export const PORT = Number(process.env.PORT || 3310)
 export const HOST = process.env.HEIBAIHE_HOST || '127.0.0.1'
 /** 前端构建产物目录（生产模式下由后端托管） */
 export const FRONTEND_DIST = path.resolve(ROOT, '..', 'frontend', 'dist')
+/**
+ * 环境密钥主密钥文件（S7，M2-1）。优先级见 security/keystore.js：
+ * 环境变量 HEIBAIHE_MASTER_KEY > 本文件 > 自动生成（权限尽量 0600）。
+ */
+export const MASTER_KEY_FILE = process.env.HEIBAIHE_MASTER_KEY_FILE || path.join(DATA_DIR, '.master.key')
 
 export function ensureDirs() {
   fs.mkdirSync(DATA_DIR, { recursive: true })

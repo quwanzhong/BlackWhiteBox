@@ -70,15 +70,15 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 
 ```bash
 npm run lint            # 后端 + 前端 eslint（--max-warnings=0）
-npm test                # 后端 node --test（61 个用例，快速反馈）
+npm test                # 后端 node --test（67 个用例，快速反馈）
 npm run test:coverage   # 同上 + 覆盖率门槛（行/分支/函数均 ≥70%）
-npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（65 项检查）
+npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（74 项检查）
 npm run ci              # lint → test:coverage → verify → build，与 GitHub Actions 同序
 ```
 
-覆盖率只统计核心模块（`engine`、`projects/scanner`、`infra/store`、`security`），
-当前为行 **96.25%** / 分支 **79.40%** / 函数 **95.52%**；路由与导入器等胶水层由
-`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 35 项）。
+覆盖率只统计核心模块（`engine`、`environments`、`projects/scanner`、`infra/store`、`security`），
+当前为行 **96.20%** / 分支 **79.56%** / 函数 **95.79%**；路由与导入器等胶水层由
+`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 44 项 / 7 个场景）。
 
 CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率门禁与场景验收，并断言构建产物
 `frontend/dist/index.html` 不含令牌占位符（生产令牌只能由后端在响应时注入）。
@@ -89,7 +89,7 @@ CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率�
 黑百盒/
 ├── frontend/                  Vue3 + TS + Vite + Element Plus + AntV X6
 │   └── src/
-│       ├── views/             Dashboard / ProjectsPage / ProjectDetail / FlowList / FlowCanvas / ReportList / ReportDetail / BugsPage / ImportPage
+│       ├── views/             Dashboard / ProjectsPage / ProjectDetail / FlowList / FlowCanvas / EnvironmentsPage / ReportList / ReportDetail / BugsPage / ImportPage
 │       ├── components/        canvas（画布与节点）、节点编辑抽屉、步骤详情、结果汇总、目录选择器、日志控制台
 │       ├── stores/            执行状态仓库（Socket.IO 事件 → 动画状态）
 │       ├── api/               后端接口封装

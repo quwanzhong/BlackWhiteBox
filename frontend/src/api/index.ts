@@ -36,9 +36,11 @@ export const api = {
   updateFlow: (id: string, dsl: FlowDsl): Promise<FlowDsl> => http.put(`/flows/${id}`, dsl).then((r) => r.data),
   deleteFlow: (id: string) => http.delete(`/flows/${id}`),
 
-  // 执行
-  runFlow: (id: string, variables?: Record<string, any>): Promise<{ executionId: string }> =>
-    http.post(`/flows/${id}/run`, { variables }).then((r) => r.data),
+  // 执行（M2-1：可选环境；变量优先级 flow < 环境 < 这里的 variables < extract）
+  runFlow: (
+    id: string,
+    payload: { variables?: Record<string, any>; environmentId?: string } = {}
+  ): Promise<{ executionId: string }> => http.post(`/flows/${id}/run`, payload).then((r) => r.data),
   listExecutions: (flowId?: string): Promise<any[]> => http.get('/executions', { params: { flowId } }).then((r) => r.data),
   getExecution: (id: string): Promise<any> => http.get(`/executions/${id}`).then((r) => r.data),
   pauseExecution: (id: string) => http.post(`/executions/${id}/pause`),
@@ -85,6 +87,20 @@ export const api = {
   projectGenerate: (id: string, data?: any): Promise<{ flows: any[] }> =>
     http.post(`/projects/${id}/flows`, data).then((r) => r.data),
   projectFlows: (id: string): Promise<any[]> => http.get(`/projects/${id}/flows`).then((r) => r.data),
+
+  // 环境（M2-1）：baseUrl + 普通变量 + 全局请求头 + 加密密钥（secrets 只回键名）
+  listEnvironments: (projectId?: string): Promise<any[]> =>
+    http.get('/environments', { params: { projectId } }).then((r) => r.data),
+  getEnvironment: (id: string): Promise<any> => http.get(`/environments/${id}`).then((r) => r.data),
+  createEnvironment: (data: any): Promise<any> => http.post('/environments', data).then((r) => r.data),
+  updateEnvironment: (id: string, data: any): Promise<any> =>
+    http.put(`/environments/${id}`, data).then((r) => r.data),
+  deleteEnvironment: (id: string) => http.delete(`/environments/${id}`),
+  resolveEnvironment: (id: string): Promise<any> => http.get(`/environments/${id}/resolve`).then((r) => r.data),
+  setEnvironmentSecret: (id: string, key: string, value: string): Promise<any> =>
+    http.put(`/environments/${id}/secrets/${encodeURIComponent(key)}`, { value }).then((r) => r.data),
+  deleteEnvironmentSecret: (id: string, key: string): Promise<any> =>
+    http.delete(`/environments/${id}/secrets/${encodeURIComponent(key)}`).then((r) => r.data),
 
   // 缺陷
   listBugs: (params?: any): Promise<any[]> => http.get('/bugs', { params }).then((r) => r.data),
