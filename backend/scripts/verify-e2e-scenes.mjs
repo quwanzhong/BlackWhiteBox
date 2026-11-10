@@ -1686,6 +1686,131 @@ try {
       !detail12b.events.some((e) => e.type === 'coverage.analyzed'),
     `pending=${cov12b.pending} analyzed=${cov12b.analyzed} failed=${cov12b.analysisFailed}`
   )
+
+  // 12.11~12.13 M3-3 源码视图：真实 HTTP + 真实文件系统。
+  // 分析结果由库里种子数据写入（CI 无 JDK，不为「读源码」再跑一次 jacococli），
+  // 但路径校验、源码读取、逐行命中标记全部走真实实现。
+  const { store } = await import('../src/store.js')
+  const srcRoot12 = path.join(DIR, 'sources12')
+  fs.mkdirSync(path.join(srcRoot12, 'com', 'demo'), { recursive: true })
+  fs.writeFileSync(
+    path.join(srcRoot12, 'com', 'demo', 'OrderService.java'),
+    ['package com.demo;', '', 'class OrderService {', '  int create() {', '    return 1;', '  }', '}', ''].join('\n')
+  )
+  fs.writeFileSync(path.join(srcRoot12, 'com', 'demo', 'Unused.java'), 'class Unused {}\n')
+  fs.writeFileSync(path.join(DIR, 'outside12.txt'), 'TOP-SECRET\n')
+
+  const sourceExec12 = 'scene12-source-exec'
+  store.saveExecutionMeta({
+    id: sourceExec12,
+    flowId: flow12.id,
+    flowName: '场景12 源码视图',
+    flowType: 'whitebox',
+    projectId: project.id,
+    status: 'passed',
+    startedAt: Date.now() - 200,
+    finishedAt: Date.now(),
+  })
+  store.saveExecutionContext(sourceExec12, {
+    environment: { id: 'env12-source', settings: { coverage: { sourcefiles: srcRoot12 } } },
+  })
+  store.saveCoverage({
+    executionId: sourceExec12,
+    nodeId: 'n1',
+    status: 'analyzed',
+    analyzedAt: Date.now(),
+    result: {
+      files: [
+        { path: 'com/demo/Unused.java', covered: [], missed: [], total: 0 },
+        { path: 'com/demo/OrderService.java', covered: [1, 2, 4], missed: [3, 5], total: 5 },
+      ],
+      totals: { files: 2, covered: 3, missed: 2, total: 5, lineRate: 60 },
+    },
+  })
+  store.saveCoverage({ executionId: sourceExec12, nodeId: 'n2', status: 'captured', execBlob: Buffer.from([1, 2, 3]) })
+  store.saveCoverage({
+    executionId: sourceExec12,
+    nodeId: 'n3',
+    status: 'analyzed',
+    result: { files: [{ path: '../outside12.txt', covered: [], missed: [1], total: 1 }] },
+  })
+  store.saveCoverage({
+    executionId: sourceExec12,
+    nodeId: 'n4',
+    status: 'analyzed',
+    result: { files: [{ path: 'com/demo/Gone.java', covered: [], missed: [1], total: 1 }] },
+  })
+
+  const srcUrl12 = (nodeId, p) =>
+    `/api/executions/${sourceExec12}/coverage/${nodeId}/source${p ? `?path=${encodeURIComponent(p)}` : ''}`
+
+  // 12.11 不带 path：默认取未覆盖行最多的文件；逐行 hit 与行率正确
+  const src11 = await get(srcUrl12('n1'))
+  const src11b = await src11.json()
+  check(
+    '12.11 源码视图：默认取未覆盖最多的文件，hit=1/0 标记与 lineRate 正确（真实读盘）',
+    src11.status === 200 &&
+      src11b.path === 'com/demo/OrderService.java' &&
+      src11b.totalLines === 7 &&
+      src11b.truncated === false &&
+      src11b.lines.filter((l) => l.hit !== null).map((l) => [l.nr, l.hit]).join('|') ===
+        '1,1|2,1|3,0|4,1|5,0' &&
+      src11b.lineRate === 60 &&
+      src11b.file.covered === 3 &&
+      src11b.file.missed === 2,
+    `path=${src11b.path} rate=${src11b.lineRate} lines=${src11b.totalLines}`
+  )
+
+  // 12.12 路径白名单：只能读本节点结果里声明过的相对路径
+  const notInResult12 = await get(srcUrl12('n1', 'com/demo/Gone.java'))
+  const traversal12 = await get(srcUrl12('n1', '../outside12.txt'))
+  const dirtyResult12 = await get(srcUrl12('n3'))
+  const missingFile12 = await get(srcUrl12('n4'))
+  check(
+    '12.12 源码路径白名单：结果外的路径/穿越路径 400，结果内但磁盘缺失 404（不变成任意文件读取）',
+    notInResult12.status === 400 &&
+      (await notInResult12.json()).code === 'COVERAGE_SOURCE_NOT_IN_RESULT' &&
+      traversal12.status === 400 &&
+      (await traversal12.json()).code === 'COVERAGE_SOURCE_NOT_IN_RESULT' &&
+      dirtyResult12.status === 400 &&
+      (await dirtyResult12.json()).code === 'COVERAGE_SOURCE_PATH_INVALID' &&
+      missingFile12.status === 404 &&
+      (await missingFile12.json()).code === 'COVERAGE_SOURCE_NOT_FOUND',
+    `notIn=${notInResult12.status} traversal=${traversal12.status} dirty=${dirtyResult12.status} missing=${missingFile12.status}`
+  )
+
+  // 12.13 降级：未分析 409、未知节点 404、未配置 sourcefiles 400、未知执行 404
+  const noSourceExec12 = 'scene12-no-source'
+  store.saveExecutionMeta({
+    id: noSourceExec12,
+    flowId: flow12.id,
+    flowName: '场景12 无源码配置',
+    projectId: project.id,
+    status: 'passed',
+  })
+  store.saveExecutionContext(noSourceExec12, { environment: { id: 'env12-nosrc', settings: {} } })
+  store.saveCoverage({
+    executionId: noSourceExec12,
+    nodeId: 'n1',
+    status: 'analyzed',
+    result: { files: [{ path: 'com/demo/OrderService.java', covered: [1], missed: [], total: 1 }] },
+  })
+  const notAnalyzed12 = await get(srcUrl12('n2'))
+  const ghostNode12 = await get(srcUrl12('ghost'))
+  const noSource12 = await get(`/api/executions/${noSourceExec12}/coverage/n1/source`)
+  const ghostExec12 = await get('/api/executions/ghost-exec/coverage/n1/source')
+  check(
+    '12.13 源码视图降级：未分析 409、未知节点 404、未配 sourcefiles 400、未知执行 404（错误码可区分）',
+    notAnalyzed12.status === 409 &&
+      (await notAnalyzed12.json()).code === 'COVERAGE_NOT_ANALYZED' &&
+      ghostNode12.status === 404 &&
+      (await ghostNode12.json()).code === 'COVERAGE_NOT_FOUND' &&
+      noSource12.status === 400 &&
+      (await noSource12.json()).code === 'COVERAGE_SOURCEFILES_MISSING' &&
+      ghostExec12.status === 404 &&
+      (await ghostExec12.json()).code === 'EXECUTION_NOT_FOUND',
+    `notAnalyzed=${notAnalyzed12.status} ghostNode=${ghostNode12.status} noSource=${noSource12.status} ghostExec=${ghostExec12.status}`
+  )
 } finally {
   await agent12.close()
 }

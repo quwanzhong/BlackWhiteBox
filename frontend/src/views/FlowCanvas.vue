@@ -15,6 +15,8 @@ import StepDetailPanel from '../components/StepDetailPanel.vue'
 import ConsolePanel from '../components/ConsolePanel.vue'
 import NodeEditDrawer from '../components/NodeEditDrawer.vue'
 import ResultSummary from '../components/ResultSummary.vue'
+import CoveragePanel from '../components/CoveragePanel.vue'
+import { fmtPct, summarizeCoverage } from '../utils/coverage'
 import type { FlowDsl, FlowNode } from '../types/flow'
 
 const route = useRoute()
@@ -165,6 +167,27 @@ onBeforeUnmount(() => {
 
 const selectedNode = computed(() => flow.value?.nodes.find((n) => n.id === selectedId.value) || null)
 const selectedStep = computed(() => (selectedId.value ? exec.steps[selectedId.value] : null))
+
+// ---------- M3-3 覆盖率面板：节点徽标 + 未覆盖行/源码 ----------
+const coverageVisible = ref(false)
+const coverageNodeId = ref('')
+const coverageRow = computed(() => (coverageNodeId.value ? exec.coverageByNode[coverageNodeId.value] : null))
+const coverageSummary = computed(() => summarizeCoverage(exec.coverage || []))
+const coverageNodeName = computed(
+  () => flow.value?.nodes.find((n) => n.id === coverageNodeId.value)?.name || coverageNodeId.value
+)
+
+/** 打开覆盖率面板：优先指定节点 → 当前选中节点 → 第一个有证据的节点 */
+function openCoverage(nodeId?: string) {
+  const candidates = [nodeId, selectedId.value, exec.coverage[0]?.nodeId]
+  const id = candidates.find((value) => value && exec.coverageByNode[value])
+  if (!id) {
+    ElMessage.info('本次执行没有覆盖率证据（环境需开启 settings.coverage）')
+    return
+  }
+  coverageNodeId.value = id
+  coverageVisible.value = true
+}
 
 function syncPositions() {
   if (!graph || !flow.value) return
@@ -393,6 +416,20 @@ async function removeNode() {
       <span v-if="exec.executionId && exec.flowId === flow.id" class="exec-id">
         本次执行：{{ exec.executionId.slice(0, 8) }}
       </span>
+      <el-button
+        v-if="sameFlow && coverageSummary.total"
+        size="small"
+        type="primary"
+        link
+        title="查看每个节点命中的行、未覆盖行与源码"
+        @click="openCoverage()"
+      >
+        覆盖率 {{ fmtPct(coverageSummary.lineRate) }}
+        <span class="muted" style="margin-left: 4px">
+          {{ coverageSummary.covered }}/{{ coverageSummary.statLines }} 行 ·
+          {{ coverageSummary.analyzed }}/{{ coverageSummary.total }} 节点已分析
+        </span>
+      </el-button>
       <span v-if="exec.connected && running" class="conn on">● 实时通道已连接</span>
       <span v-else-if="running" class="conn">○ 实时通道连接中…</span>
       <el-button
@@ -423,15 +460,24 @@ async function removeNode() {
           :node="selectedNode"
           :step="selectedStep"
           :waiting="exec.waitingNodeId === selectedId"
+          :coverage="selectedId ? exec.coverageByNode[selectedId] : null"
           @edit="openEditNode"
           @remove="removeNode"
           @confirm-manual="confirmManual"
+          @coverage="openCoverage(selectedId)"
         />
         <ConsolePanel :logs="exec.logs" />
       </aside>
     </div>
 
     <NodeEditDrawer v-model="drawerVisible" :node="editingNode" @confirm="applyNode" />
+
+    <CoveragePanel
+      v-model="coverageVisible"
+      :execution-id="exec.executionId"
+      :row="coverageRow"
+      :node-name="coverageNodeName"
+    />
 
     <el-dialog v-model="summaryVisible" title="流程执行结果" width="820px" top="5vh">
       <ResultSummary :summary="exec.summary" :flow="flow" :steps="exec.steps" />

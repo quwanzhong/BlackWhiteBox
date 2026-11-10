@@ -3,6 +3,12 @@ import { store } from '../store.js'
 import { sessions } from '../engine/registry.js'
 import { FAILURE_CLASSES, enrichExecutionDetail } from '../reporting/classify.js'
 import { EXPORT_FORMATS, normalizeFormat, renderExport } from '../reporting/export.js'
+import {
+  CoverageSourceError,
+  buildSourceView,
+  readSourceFile,
+  resolveSourcePath,
+} from '../coverage/source.js'
 
 const router = Router()
 
@@ -108,6 +114,69 @@ router.get('/:id/coverage', (req, res) => {
     analysisFailed: analysisFailed.length,
     coverage,
   })
+})
+
+/**
+ * M3-3：覆盖率面板的源码视图。
+ *
+ * `?path=` 只能是本节点 result.files 里出现过的相对路径（不让接口变成任意文件读取），
+ * 源码根目录取执行时的环境快照 `settings.coverage.sourcefiles`；
+ * 返回带 `hit` 标记的逐行内容，前端据此标未覆盖行并跳转。
+ */
+router.get('/:id/coverage/:nodeId/source', (req, res) => {
+  const id = req.params.id
+  if (!store.hasExecution(id)) {
+    return res.status(404).json({ error: '执行记录不存在', code: 'EXECUTION_NOT_FOUND' })
+  }
+  const row = store.listExecutionCoverage(id).find((item) => item.nodeId === req.params.nodeId)
+  if (!row) {
+    return res.status(404).json({ error: '该节点没有覆盖率记录', code: 'COVERAGE_NOT_FOUND' })
+  }
+  if (!row.result) {
+    return res.status(409).json({
+      error: row.error || '该节点的覆盖率证据尚未分析完成',
+      code: row.error ? 'COVERAGE_ANALYSIS_FAILED' : 'COVERAGE_NOT_ANALYZED',
+    })
+  }
+  const files = Array.isArray(row.result.files) ? row.result.files : []
+  // 不带 path 时给「未覆盖行最多」的文件，前端打开面板即可看到最需要看的那份
+  const fallback = [...files].sort((a, b) => (b.missed?.length || 0) - (a.missed?.length || 0))[0]
+  const requested = req.query.path === undefined ? fallback?.path : String(req.query.path)
+  if (!requested) {
+    return res.status(404).json({ error: '该节点没有可查看的源码文件', code: 'COVERAGE_SOURCE_NOT_FOUND' })
+  }
+  const file = files.find((item) => item.path === requested)
+  if (!file) {
+    return res.status(400).json({
+      error: '源码路径不在该节点的分析结果内',
+      code: 'COVERAGE_SOURCE_NOT_IN_RESULT',
+    })
+  }
+  const environment = store.getExecutionEnvironment(id)
+  const root = environment?.settings?.coverage?.sourcefiles
+  try {
+    const resolved = resolveSourcePath(root, file.path)
+    const raw = readSourceFile(resolved.absolute)
+    const view = buildSourceView({
+      path: resolved.path,
+      text: raw.text,
+      covered: file.covered,
+      missed: file.missed,
+      bytes: raw.bytes,
+      truncated: raw.truncated,
+    })
+    res.json({
+      executionId: id,
+      nodeId: row.nodeId,
+      sourcefiles: root,
+      file: { covered: file.covered?.length || 0, missed: file.missed?.length || 0 },
+      ...view,
+    })
+  } catch (err) {
+    if (!(err instanceof CoverageSourceError)) throw err
+    const status = err.code === 'COVERAGE_SOURCE_NOT_FOUND' ? 404 : 400
+    res.status(status).json({ error: err.message, code: err.code })
+  }
 })
 
 // 暂停

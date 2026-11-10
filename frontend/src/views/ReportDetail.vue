@@ -8,8 +8,10 @@ import { saveBlob } from '../utils/download'
 import { useExecStore } from '../stores/execution'
 import { createGraph, renderFlow } from '../components/canvas/useCanvas'
 import ResultSummary from '../components/ResultSummary.vue'
+import CoveragePanel from '../components/CoveragePanel.vue'
 import type { FlowDsl } from '../types/flow'
 import { failureLabel, failureTag } from '../constants/failure'
+import { coverageBadge, fmtPct, summarizeCoverage } from '../utils/coverage'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,6 +41,14 @@ onMounted(async () => {
   await nextTick()
   graph = createGraph(container.value!, true)
   renderFlow(graph, flow.value, states)
+
+  // M3-3：覆盖率是旁路信息，读不到不影响报告主体
+  try {
+    const coverage = await api.getExecutionCoverage(detail.value.id)
+    exec.setCoverage(coverage)
+  } catch {
+    // 忽略：老执行/环境未开启覆盖率时可能没有该接口数据
+  }
 })
 
 onBeforeUnmount(() => {
@@ -51,6 +61,41 @@ const stepsById = computed(() => {
   for (const s of detail.value?.steps || []) map[s.nodeId] = s
   return map
 })
+
+// ---------- 运行时覆盖率（M3-3） ----------
+const coverageVisible = ref(false)
+const coverageNodeId = ref('')
+const coverageRow = computed(() => (coverageNodeId.value ? exec.coverageByNode[coverageNodeId.value] : null))
+const coverageSummary = computed(() => summarizeCoverage(exec.coverage || []))
+const coverageNodeName = computed(() => {
+  const node = (detail.value?.nodes || []).find((n: any) => n.id === coverageNodeId.value)
+  return node?.name || coverageNodeId.value
+})
+const coverageTable = computed(() =>
+  (exec.coverage || []).map((row: any) => {
+    const node = (detail.value?.nodes || []).find((n: any) => n.id === row.nodeId)
+    const badge = coverageBadge(row)
+    return {
+      ...row,
+      nodeName: node?.name || row.nodeId,
+      badge,
+      badgeType:
+        badge.tone === 'ok'
+          ? 'success'
+          : badge.tone === 'warn'
+            ? 'warning'
+            : badge.tone === 'bad' || badge.tone === 'error'
+              ? 'danger'
+              : 'info',
+      files: row.result?.totals?.files ?? 0,
+    }
+  })
+)
+
+function openCoverage(nodeId: string) {
+  coverageNodeId.value = nodeId
+  coverageVisible.value = true
+}
 
 const expandRows = computed(() => (detail.value?.steps || []).map((s: any) => s.id))
 
@@ -183,6 +228,64 @@ async function submitBug() {
 
     <div class="report-canvas mt12" ref="container" />
 
+    <div v-if="exec.coverage.length" class="report-block mt12">
+      <h3>
+        运行时覆盖率
+        <span class="muted" style="font-weight: 400; font-size: 12px; margin-left: 8px">
+          行覆盖 {{ fmtPct(coverageSummary.lineRate) }}（{{ coverageSummary.covered }}/{{ coverageSummary.statLines }} 行）
+          · 已分析 {{ coverageSummary.analyzed }}/{{ coverageSummary.total }} 个节点
+          <template v-if="coverageSummary.pending"> · 待分析 {{ coverageSummary.pending }}</template>
+          <template v-if="coverageSummary.analysisFailed"> · 分析失败 {{ coverageSummary.analysisFailed }}</template>
+          <template v-if="coverageSummary.unavailable"> · 无证据 {{ coverageSummary.unavailable }}</template>
+        </span>
+      </h3>
+      <el-table :data="coverageTable" size="small" border>
+        <el-table-column prop="nodeName" label="节点" min-width="180" />
+        <el-table-column label="覆盖率" width="120">
+          <template #default="{ row }">
+            <el-tooltip :content="row.badge.title" placement="top">
+              <el-tag size="small" effect="plain" :type="row.badgeType">{{ row.badge.text || '—' }}</el-tag>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="行覆盖" width="150">
+          <template #default="{ row }">
+            <span v-if="row.result?.totals">
+              {{ fmtPct(row.result.totals.lineRate) }}
+              <span class="muted">（{{ row.result.totals.covered }}/{{ row.result.totals.total }}）</span>
+            </span>
+            <span v-else class="diff-na">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="文件" width="80">
+          <template #default="{ row }">
+            <span v-if="row.result?.totals">{{ row.files }}</span>
+            <span v-else class="diff-na">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="说明" min-width="240">
+          <template #default="{ row }">
+            <span v-if="row.error" class="diff-bad">{{ row.error }}</span>
+            <span v-else-if="row.status === 'captured'" class="muted">已取证，等待分析（需配置 settings.coverage.classfiles）</span>
+            <span v-else-if="row.status === 'unavailable'" class="muted">JaCoCo agent 不可用，未采集到运行时证据</span>
+            <span v-else class="muted">分析完成</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.result?.files?.length"
+              link
+              type="primary"
+              size="small"
+              @click="openCoverage(row.nodeId)"
+            >查看源码</el-button>
+            <span v-else class="diff-na">—</span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
     <div class="report-block mt12">
       <h3>步骤明细（输入 / 实际输出 / 校验）</h3>
       <el-table :data="detail.steps || []" size="small" border :row-key="'id'" :expand-row-keys="expandRows">
@@ -285,5 +388,12 @@ async function submitBug() {
         <el-button type="primary" :loading="bugSaving" @click="submitBug">提交缺陷</el-button>
       </template>
     </el-dialog>
+
+    <CoveragePanel
+      v-model="coverageVisible"
+      :execution-id="detail.id"
+      :row="coverageRow"
+      :node-name="coverageNodeName"
+    />
   </div>
 </template>

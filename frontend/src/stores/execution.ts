@@ -4,6 +4,7 @@ import type { NodeStatus } from '../types/flow'
 import { getToken } from '../security/token'
 import { api } from '../api'
 import { EventSync } from './event-sync'
+import { mergeCoverageEvent } from '../utils/coverage'
 
 let socket: Socket | null = null
 let bound = false
@@ -47,8 +48,17 @@ export const useExecStore = defineStore('execution', {
     connected: false,
     // 本次执行的开始时间（服务端毫秒），用于画布上的实时耗时；回放/续跑时以事件里的 startedAt 为准
     startedAt: 0,
+    // M3-3：按节点的覆盖率证据（投影，不含 exec_blob），画布徽标与面板共用
+    coverage: [] as any[],
+    coverageLoading: false,
   }),
   getters: {
+    /** M3-3：节点 id → 覆盖率行（徽标直接查这里，没采到就是 undefined） */
+    coverageByNode(state): Record<string, any> {
+      const map: Record<string, any> = {}
+      for (const row of state.coverage) map[row.nodeId] = row
+      return map
+    },
     /** M2-5：已应用到界面的最大事件 seq（回放游标），仅用于诊断/调试 */
     lastSeq: (): number => sync.lastSeq,
     replaying: (): boolean => sync.isReplaying,
@@ -69,6 +79,8 @@ export const useExecStore = defineStore('execution', {
       this.lastEvent = null
       this.waitingNodeId = ''
       this.startedAt = 0
+      this.coverage = []
+      this.coverageLoading = false
       sync.reset()
       syncing = false
     },
@@ -106,6 +118,27 @@ export const useExecStore = defineStore('execution', {
       // （现场故障：等待人工确认的 manual_wait 落在这条缝里，界面一直显示执行中）。
       s.emit('join', { room: 'exec:' + executionId })
       await this.backfill().catch(() => undefined)
+      // M3-3：画布徽标/覆盖率面板需要历史投影（刷新后也能看到上次分析结果）
+      this.loadCoverage()
+    },
+    /** M3-3：直接注入覆盖率投影（报告页静态回放用，不依赖实时通道） */
+    setCoverage(data: any) {
+      this.coverage = Array.isArray(data?.coverage) ? data.coverage : []
+    },
+    /** M3-3：拉取本次执行的覆盖率投影；覆盖率是旁路信息，失败不影响执行视图 */
+    async loadCoverage() {
+      const id = this.executionId
+      if (!id) return
+      this.coverageLoading = true
+      try {
+        const data = await api.getExecutionCoverage(id)
+        // 等待期间可能已切到另一次执行：旧响应不能盖上来
+        if (this.executionId === id) this.setCoverage(data)
+      } catch {
+        // 忽略：徽标保持现状，面板里仍可重试
+      } finally {
+        if (this.executionId === id) this.coverageLoading = false
+      }
     },
     /** M2-5：按 lastSeq 向后端补齐事件（全量回放用 after=0）；并发调用只跑一次 */
     async backfill() {
@@ -172,6 +205,13 @@ export const useExecStore = defineStore('execution', {
           this.status = p.status
           this.summary = p.summary
           this.waitingNodeId = ''
+          break
+        // M3-3：取证完成先亮「待分析」，分析完成后重拉一次投影拿到行数据
+        case 'coverage.dump':
+          this.coverage = mergeCoverageEvent(this.coverage, evt)
+          break
+        case 'coverage.analyzed':
+          this.loadCoverage()
           break
       }
     },

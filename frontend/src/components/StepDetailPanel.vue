@@ -1,17 +1,21 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { FlowNode } from '../types/flow'
+import { coverageBadge, fmtPct } from '../utils/coverage'
 
 const props = defineProps<{
   node: FlowNode | null
   step: any | null
   waiting?: boolean
+  /** M3-3：该节点的覆盖率证据投影（没有就是 undefined） */
+  coverage?: any
 }>()
 
 const emit = defineEmits<{
   (e: 'edit'): void
   (e: 'remove'): void
   (e: 'confirm-manual', pass: boolean, note: string): void
+  (e: 'coverage'): void
 }>()
 
 const note = ref('')
@@ -23,6 +27,8 @@ const pretty = (v: any) => {
 
 const checks = computed(() => props.step?.checks?.results || [])
 const isManual = computed(() => props.node?.action?.type === 'manual')
+const covBadge = computed(() => coverageBadge(props.coverage || null))
+const covTotals = computed(() => props.coverage?.result?.totals || null)
 const statusText: Record<string, string> = {
   pending: '待执行', running: '执行中', waiting: '等待人工确认',
   passed: '通过', failed: '未通过', skipped: '已跳过',
@@ -128,6 +134,23 @@ const statusText: Record<string, string> = {
         <div class="sp-verdict" :class="step.checks.matched ? 'diff-ok' : 'diff-bad'">
           {{ step.checks.matched ? '✅ 实际输出符合该步骤的理想输出' : '❌ 实际输出与理想输出不一致' }}
         </div>
+      </template>
+
+      <!-- 运行时覆盖率（M3-3）：四种无数字状态各有说明，不当 0% 展示 -->
+      <template v-if="coverage">
+        <div class="sp-section-title">运行时覆盖率</div>
+        <div class="sp-kv" style="align-items: center; gap: 8px; display: flex; flex-wrap: wrap">
+          <el-tag size="small" effect="plain" :type="covBadge.tone === 'ok' ? 'success' : covBadge.tone === 'warn' ? 'warning' : covBadge.tone === 'bad' || covBadge.tone === 'error' ? 'danger' : 'info'">
+            {{ covBadge.text || '—' }}
+          </el-tag>
+          <span v-if="covTotals" class="muted">
+            行覆盖 {{ fmtPct(covTotals.lineRate) }}（{{ covTotals.covered }}/{{ covTotals.total }} 行）
+          </span>
+          <span v-else class="muted">{{ covBadge.title }}</span>
+        </div>
+        <el-button size="small" plain style="margin-top: 6px" @click="emit('coverage')">
+          查看未覆盖行 / 源码
+        </el-button>
       </template>
 
       <!-- 人工确认 -->

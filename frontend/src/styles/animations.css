@@ -227,12 +227,26 @@ body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .flow-node.is-manual .fn-method { background: #8e44ad !important; }
+.fn-right { display: flex; align-items: center; gap: 6px; }
 .fn-status { font-size: 12px; color: #c0c4cc; }
 .fn-status.fs-running { color: #409eff; animation: hbh-dot-pulse 1.2s infinite; border-radius: 50%; }
 .fn-status.fs-passed { color: #67c23a; font-weight: 700; }
 .fn-status.fs-failed { color: #f56c6c; font-weight: 700; }
 .fn-status.fs-waiting { color: #e6a23c; }
 .fn-status.fs-skipped { color: #c0c4cc; }
+
+/* M3-3：覆盖率徽标（颜色与状态徽标区分开，避免和下划线/状态点混淆） */
+.fn-cov {
+  font-size: 11px; font-weight: 700; line-height: 16px;
+  padding: 0 5px; border-radius: 8px; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.fn-cov.cv-ok { color: #529b2e; background: #f0f9eb; border-color: #e1f3d8; }
+.fn-cov.cv-warn { color: #b88230; background: #fdf6ec; border-color: #faecd8; }
+.fn-cov.cv-bad { color: #c45656; background: #fef0f0; border-color: #fde2e2; }
+.fn-cov.cv-pending { color: #909399; background: #f4f4f5; border-color: #e9e9eb; }
+.fn-cov.cv-error { color: #c45656; background: #fff; border-color: #f56c6c; }
+.fn-cov.cv-none { color: #a8abb2; background: #fff; border-color: #dcdfe6; }
 .fn-name {
   font-size: 13px; font-weight: 600; color: #303133;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -356,6 +370,69 @@ body {
 }
 .report-block { background: #fff; border-radius: 10px; padding: 14px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04); }
 .report-block h3 { margin: 0 0 10px; font-size: 14px; }
+
+/* ---------------- 覆盖率面板（M3-3） ---------------- */
+.cov-summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.cov-chip {
+  font-size: 12px; color: #606266; background: #f7f8fa;
+  border: 1px solid #ebeef5; border-radius: 6px; padding: 3px 9px;
+}
+.cov-chip b { color: #303133; margin-left: 4px; }
+.cov-empty {
+  padding: 22px 12px; text-align: center; font-size: 13px; color: #909399;
+  background: #fafafa; border: 1px dashed #dcdfe6; border-radius: 8px;
+}
+.cov-body { display: flex; gap: 12px; height: 62vh; min-height: 320px; }
+.cov-files {
+  width: 250px; flex-shrink: 0; overflow: auto;
+  border: 1px solid #ebeef5; border-radius: 8px; background: #fafafa;
+}
+.cov-file { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #f0f2f5; }
+.cov-file:hover { background: #f0f7ff; }
+.cov-file.active { background: #ecf5ff; box-shadow: inset 3px 0 0 #409eff; }
+.cov-file-path {
+  font-size: 12px; font-weight: 600; color: #303133;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cov-file-meta {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  font-size: 11px; color: #909399; margin-top: 3px;
+}
+.cov-code-wrap {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  border: 1px solid #ebeef5; border-radius: 8px; overflow: hidden;
+}
+.cov-toolbar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid #ebeef5; background: #fafafa; flex-shrink: 0;
+}
+.cov-toolbar .path {
+  flex: 1; min-width: 0; font-family: Consolas, 'Courier New', monospace; font-size: 12px;
+  color: #606266; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cov-code {
+  flex: 1; overflow: auto; background: #fff;
+  font-family: Consolas, 'Courier New', monospace; font-size: 12px; line-height: 19px;
+}
+.cov-line { display: flex; white-space: pre; min-width: max-content; }
+.cov-line .cov-nr {
+  width: 48px; flex-shrink: 0; text-align: right; padding-right: 10px;
+  color: #c0c4cc; user-select: none; background: #fafafa; border-right: 1px solid #f0f2f5;
+}
+.cov-line .cov-code-text { padding: 0 10px; color: #303133; }
+.cov-line.covered { background: #f0f9eb; }
+.cov-line.covered .cov-nr { background: #e7f5dd; color: #67c23a; }
+.cov-line.missed { background: #fef0f0; }
+.cov-line.missed .cov-nr { background: #fde2e2; color: #f56c6c; font-weight: 700; }
+.cov-note { padding: 6px 10px; font-size: 12px; color: #b88230; background: #fdf6ec; border-top: 1px solid #faecd8; }
+.cov-summary-bar {
+  display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: #606266;
+  padding: 0 8px; border-left: 1px solid #ebeef5; margin-left: 4px;
+}
+.cov-summary-bar b { font-size: 13px; }
+.cov-summary-bar .rate-ok { color: #529b2e; }
+.cov-summary-bar .rate-warn { color: #b88230; }
+.cov-summary-bar .rate-bad { color: #c45656; }
 
 /* ---------------- Element 微调 ---------------- */
 .el-table { font-size: 13px; }

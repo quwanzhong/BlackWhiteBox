@@ -61,6 +61,12 @@ export const api = {
   getExecutionEvents: (id: string, after = 0): Promise<{ id: string; lastSeq: number; events: any[] }> =>
     http.get(`/executions/${id}/events`, { params: { after } }).then((r) => r.data),
   exportExecution: (id: string, format: ExportFormat) => download(`/executions/${id}/export`, format),
+  // M3-3：覆盖率投影 + 源码视图（path 必须在该节点分析结果内）
+  getExecutionCoverage: (id: string): Promise<any> => http.get(`/executions/${id}/coverage`).then((r) => r.data),
+  getCoverageSource: (id: string, nodeId: string, path: string): Promise<any> =>
+    http
+      .get(`/executions/${id}/coverage/${encodeURIComponent(nodeId)}/source`, { params: { path } })
+      .then((r) => r.data),
   pauseExecution: (id: string) => http.post(`/executions/${id}/pause`),
   resumeExecution: (id: string) => http.post(`/executions/${id}/resume`),
   stopExecution: (id: string) => http.post(`/executions/${id}/stop`),

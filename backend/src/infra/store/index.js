@@ -635,6 +635,13 @@ export function createStore(db) {
     hasExecution(id) {
       return Boolean(s.getExecutionRow.get(id))
     },
+    /** M3-3：只取执行上下文里的环境快照（看源码要 settings.coverage.sourcefiles，不读整份详情） */
+    getExecutionEnvironment(id) {
+      const row = s.getExecutionRow.get(id)
+      if (!row) return null
+      const context = parse(row.context_json, null)
+      return context?.environment || null
+    },
     /** M3-1：执行的全部覆盖率快照投影（不含原始 blob，只给 bytes） */
     listExecutionCoverage(executionId) {
       return s.listCoverage.all(executionId).map((row) => coverageRow(row))
