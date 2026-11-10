@@ -11,10 +11,11 @@
     "seed": "npm run seed --prefix backend",
     "lint": "npm run lint --prefix backend && npm run lint --prefix frontend",
     "test": "npm run test --prefix backend",
+    "test:frontend": "npm run test --prefix frontend",
     "test:coverage": "npm run test:coverage --prefix backend",
     "verify": "npm run verify --prefix backend",
     "verify:jacoco": "npm run verify:jacoco --prefix backend",
-    "ci": "npm run lint && npm run test:coverage && npm run verify && npm run build"
+    "ci": "npm run lint && npm run test:coverage && npm run test:frontend && npm run verify && npm run build"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

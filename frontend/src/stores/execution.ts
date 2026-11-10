@@ -3,9 +3,14 @@ import { io, type Socket } from 'socket.io-client'
 import type { NodeStatus } from '../types/flow'
 import { getToken } from '../security/token'
 import { api } from '../api'
+import { EventSync } from './event-sync'
 
 let socket: Socket | null = null
 let bound = false
+/** 补洞/去重的内核（纯 TS，已在 frontend/test/event-sync.test.mjs 覆盖时序缺陷） */
+const sync = new EventSync()
+/** 回放请求进行中：并发 backfill 只跑一次，避免游标被两条路径交替推进 */
+let syncing = false
 
 export function getSocket(): Socket {
   if (!socket) {
@@ -40,11 +45,13 @@ export const useExecStore = defineStore('execution', {
     lastEvent: null as any,
     waitingNodeId: '',
     connected: false,
-    // M2-5：已应用到画布的最大事件 seq，用于去重与断线补洞
-    lastSeq: 0,
-    replaying: false,
+    // 本次执行的开始时间（服务端毫秒），用于画布上的实时耗时；回放/续跑时以事件里的 startedAt 为准
+    startedAt: 0,
   }),
   getters: {
+    /** M2-5：已应用到界面的最大事件 seq（回放游标），仅用于诊断/调试 */
+    lastSeq: (): number => sync.lastSeq,
+    replaying: (): boolean => sync.isReplaying,
     running(state): boolean {
       return ['running', 'paused'].includes(state.status)
     },
@@ -61,7 +68,9 @@ export const useExecStore = defineStore('execution', {
       this.summary = null
       this.lastEvent = null
       this.waitingNodeId = ''
-      this.lastSeq = 0
+      this.startedAt = 0
+      sync.reset()
+      syncing = false
     },
     async connect(executionId: string, flowName = '', flowId = '') {
       this.reset()
@@ -69,20 +78,20 @@ export const useExecStore = defineStore('execution', {
       this.flowName = flowName
       this.flowId = flowId
       this.status = 'running'
+      // 先用本地时间兜底，flow_start / flow_resume 到达后以服务端 startedAt 覆盖
+      this.startedAt = Date.now()
       const s = getSocket()
       this.connected = s.connected
       if (!bound) {
         bound = true
         s.on('connect', () => {
           const store = useExecStore()
-          // M2-5：断线重连 —— 先把缺口补齐（after=lastSeq），再重新进房间继续收实时事件
           const reconnected = store.lastSeq > 0 || store.connected
           store.connected = true
           if (store.executionId && reconnected) {
-            store
-              .backfill()
-              .catch(() => undefined)
-              .then(() => s.emit('join', { room: 'exec:' + store.executionId }))
+            // 重连同样「先进房间再补齐」：先 join 才不漏实时事件，缺口用回放补
+            s.emit('join', { room: 'exec:' + store.executionId })
+            store.backfill().catch(() => undefined)
           }
         })
         s.on('disconnect', () => {
@@ -92,34 +101,39 @@ export const useExecStore = defineStore('execution', {
           useExecStore().handleEvent(evt)
         })
       }
-      // M2-5：先回放历史（打开页面也能重建进行中的执行），后进房间 ——
-      // 房间内只可能收到「回放最后一条之后」的新事件，与回放重叠的部分由 seq 去重兜底
-      await this.backfill().catch(() => undefined)
+      // M2-5：先进房间，再回放历史（打开页面也能重建进行中的执行）。
+      // 顺序很关键 —— 反过来会在「回放完成 → join 成功」之间丢事件，界面永久停在旧状态
+      // （现场故障：等待人工确认的 manual_wait 落在这条缝里，界面一直显示执行中）。
       s.emit('join', { room: 'exec:' + executionId })
+      await this.backfill().catch(() => undefined)
     },
-    /** M2-5：按 lastSeq 向后端补齐事件（全量回放用 after=0） */
+    /** M2-5：按 lastSeq 向后端补齐事件（全量回放用 after=0）；并发调用只跑一次 */
     async backfill() {
-      if (!this.executionId) return
-      this.replaying = true
+      if (!this.executionId || syncing) return
+      syncing = true
+      sync.beginReplay()
       try {
-        const data = await api.getExecutionEvents(this.executionId, this.lastSeq)
-        for (const evt of data.events || []) this.handleEvent(evt)
+        const data = await api.getExecutionEvents(this.executionId, sync.lastSeq)
+        sync.replay(data.events || [], (evt) => this.applyEvent(evt))
       } finally {
-        this.replaying = false
+        // 回放期间缓冲的实时事件在这里合并（排序 + seq 去重），不会丢帧
+        sync.endReplay((evt) => this.applyEvent(evt))
+        syncing = false
       }
     },
     handleEvent(evt: any) {
-      // M2-5：seq 去重 —— WS 与回放可能重叠，seq <= lastSeq 的一律丢弃
-      if (typeof evt?.seq === 'number') {
-        if (evt.seq <= this.lastSeq) return
-        this.lastSeq = evt.seq
-      }
+      // 回放中先缓冲，避免实时事件与回放互相推进游标导致丢帧
+      sync.receive(evt, (e) => this.applyEvent(e))
+    },
+    /** 落库事件 → 界面状态（游标与去重已由 EventSync 处理） */
+    applyEvent(evt: any) {
       this.lastEvent = evt
       const p = evt.payload || {}
       switch (evt.type) {
         case 'flow_start':
           this.flowId = p.flowId || this.flowId
           this.flowName = p.flowName || this.flowName
+          if (Number.isFinite(p.startedAt)) this.startedAt = p.startedAt
           for (const n of p.nodes || []) this.nodeStates[n.id] = 'pending'
           this.status = 'running'
           break
@@ -148,6 +162,8 @@ export const useExecStore = defineStore('execution', {
         case 'flow_resume':
           // M2-5：会话换进程续跑（历史事件已在回放里重建画布，只同步状态）
           if (!p.paused) this.status = 'running'
+          // 续跑要接着原来的总耗时算，不能从 0 重新计时
+          if (Number.isFinite(p.startedAt)) this.startedAt = p.startedAt
           break
         case 'stopped':
           this.status = 'stopped'

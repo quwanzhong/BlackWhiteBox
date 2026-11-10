@@ -44,6 +44,9 @@
 - **断线重放与会话恢复（M2-5）**：事件在 `RunSession` 内同步编号，`GET /events?after=<seq>` 增量补齐；
   执行会话按节点边界持久化，进程被强杀后重启会从断点续跑——已完成节点不重跑、中断尝试留下 `skipped` 证据、
   暂停状态保持；未完成的套件运行收敛为 `stopped`，不擅自续跑。
+- **执行过程可见（M2-5 补强）**：状态条常驻「已执行 / 总耗时」（以服务端 `startedAt` 为基准，刷新或重连不清零），
+  阶段徽标区分执行中 / 已暂停 / 等待人工确认 / 已通过 / 未通过 / 已停止；等待人工确认时顶部橙色横幅 + 自动选中该节点，
+  「通过 / 不通过」就在右侧；页面重新打开会自动接上仍在跑的执行。
 - **覆盖率取证（M3-1）**：环境里配置 JaCoCo agent（`settings.coverage`）后，每个 HTTP 节点执行前 `reset`、
   结束后 `dumpAndReset`，原始 `.exec` 按节点落进 SQLite，`GET /api/executions/:id/coverage` 返回不含原始字节的聚合投影，
   实时推送 `coverage.dump`；agent 连不上时该节点记 `unavailable` + 稳定错误码，**节点结论不受影响、绝不伪装成 0% 或通过**。
@@ -88,15 +91,16 @@ Windows 双击启动：`start.bat`（自动装依赖、构建、打开浏览器�
 ```bash
 npm run lint            # 后端 + 前端 eslint（--max-warnings=0）
 npm test                # 后端 node --test（127 个用例，快速反馈）
+npm run test:frontend   # 前端 node --test（事件同步/时序回归，5 个用例）
 npm run test:coverage   # 同上 + 覆盖率门槛（行/分支/函数均 ≥70%）
 npm run verify          # 场景级验收：真实 HTTP/Socket.IO + 临时 SQLite（82 项检查 / 12 场景）
 npm run verify:jacoco   # 可选：真实 JaCoCo agent 复核（需本地 JDK 17 + poc/jacoco 产物，不在 CI 跑）
-npm run ci              # lint → test:coverage → verify → build，与 GitHub Actions 同序
+npm run ci              # lint → test:coverage → test:frontend → verify → build，与 GitHub Actions 同序
 ```
 
 覆盖率只统计核心模块（`engine`、`environments`、`suites`、`reporting`、`projects/scanner`、`infra/store`、`security`、`coverage`），
-当前本地（Windows）为行 **96.29%** / 分支 **80.80%** / 函数 **95.06%**；路由与导入器等胶水层由
-`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 30 项 + 功能域 82 项 / 12 个场景）。
+当前本地（Windows）为行 **96.30%** / 分支 **80.80%** / 函数 **95.06%**；路由与导入器等胶水层由
+`backend/scripts/verify-e2e-*.mjs` 对真实后端做端到端回归（执行深场景 31 项 + 功能域 82 项 / 12 个场景）。
 
 CI 配置见 `.github/workflows/ci.yml`：push / PR 自动跑 lint、覆盖率门禁与场景验收，并断言构建产物
 `frontend/dist/index.html` 不含令牌占位符（生产令牌只能由后端在响应时注入）。

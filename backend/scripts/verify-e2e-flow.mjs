@@ -296,6 +296,15 @@ check(
     typesA.filter((t) => t === 'flow_end').length === 1,
   `events=${typesA.length}`
 )
+const startA = detailA.events.find((e) => e.type === 'flow_start')
+check(
+  'A9b flow_start 带服务端 startedAt（前端显示实时耗时，回放/续跑不归零）',
+  Number.isInteger(startA?.payload?.startedAt) &&
+    startA.payload.startedAt > 0 &&
+    startA.payload.startedAt <= Date.now() &&
+    detailA.startedAt === startA.payload.startedAt,
+  `startedAt=${startA?.payload?.startedAt} detail=${detailA.startedAt}`
+)
 const wsA = wsEvents.filter((e) => e.executionId === runA.executionId)
 check(
   'A10 WebSocket 实时推送：step_end×3 + flow_end（含 checks/actual 供 UI 展示）',

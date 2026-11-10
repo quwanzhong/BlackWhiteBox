@@ -34,8 +34,67 @@ const environmentId = ref('')
 const ENV_STORAGE_PREFIX = 'heibaihe.env.'
 
 let graph: any = null
+let clockTimer: number | undefined
+let reconcileTimer: number | undefined
 
 const running = computed(() => exec.running && exec.flowId === flow.value?.id)
+
+/** 当前画布是否正对应这次执行（用于状态条上的耗时/阶段，避免串场） */
+const sameFlow = computed(() => !!exec.executionId && exec.flowId === flow.value?.id)
+
+/** 500ms 心跳：只驱动耗时文本，不触发其它计算 */
+const now = ref(Date.now())
+
+/** 执行阶段：等待人工确认要单独成态，否则界面看起来像卡住 */
+const execPhase = computed<'running' | 'paused' | 'waiting' | ''>(() => {
+  if (!running.value) return ''
+  if (exec.waitingNodeId) return 'waiting'
+  if (exec.status === 'paused') return 'paused'
+  return 'running'
+})
+
+const waitingNodeName = computed(() => {
+  if (!exec.waitingNodeId) return ''
+  return flow.value?.nodes.find((n) => n.id === exec.waitingNodeId)?.name || exec.waitingNodeId
+})
+
+const elapsedMs = computed(() => {
+  if (!sameFlow.value) return 0
+  // 结束后用服务端统计的总耗时，避免前端时钟误差
+  if (!running.value && Number.isFinite(exec.summary?.durationMs)) return exec.summary.durationMs
+  if (!exec.startedAt) return 0
+  return Math.max(0, now.value - exec.startedAt)
+})
+
+const elapsedText = computed(() => {
+  const total = elapsedMs.value / 1000
+  if (total < 60) return `${total.toFixed(1)}s`
+  return `${Math.floor(total / 60)}m ${String(Math.floor(total % 60)).padStart(2, '0')}s`
+})
+
+const phaseText = computed(() => {
+  if (execPhase.value === 'waiting') return '等待人工确认'
+  if (execPhase.value === 'paused') return '已暂停'
+  if (execPhase.value === 'running') return '执行中'
+  if (!sameFlow.value || !exec.summary) return ''
+  const finished: Record<string, string> = { passed: '已通过', failed: '未通过', stopped: '已停止' }
+  return finished[exec.summary.status as string] || '已结束'
+})
+
+const phaseTone = computed(() => {
+  if (execPhase.value) return execPhase.value
+  if (exec.summary?.status === 'passed') return 'passed'
+  if (exec.summary?.status === 'failed') return 'failed'
+  return 'done'
+})
+
+// 进入人工确认时自动选中该节点，右侧直接出现「通过 / 不通过」按钮
+watch(
+  () => exec.waitingNodeId,
+  (id) => {
+    if (id && exec.flowId === flow.value?.id) selectedId.value = id
+  }
+)
 
 async function loadEnvironments(target: FlowDsl) {
   try {
@@ -57,6 +116,14 @@ function selectEnvironment(id: string) {
 }
 
 onMounted(async () => {
+  clockTimer = window.setInterval(() => {
+    now.value = Date.now()
+  }, 500)
+  // 兜底对账：实时通道丢帧（断线/重连/竞态）时按 lastSeq 补齐，
+  // 保证界面不会永久停在「执行中」，也不会漏掉「等待人工确认」这类关键状态
+  reconcileTimer = window.setInterval(() => {
+    if (running.value) exec.backfill().catch(() => undefined)
+  }, 4000)
   try {
     flow.value = await api.getFlow(route.params.id as string)
   } catch {
@@ -66,6 +133,9 @@ onMounted(async () => {
   }
   // 若上次执行属于其它流程，清空执行视图，避免状态串场
   if (!exec.running && exec.flowId !== flow.value.id) exec.reset()
+  // 刷新/重新进入画布时接上进行中的执行：否则用户以为「刚才那次执行丢了」，
+  // 也看不到耗时和「等待人工确认」（本次故障的第二个诱因）
+  if (!exec.running) await attachRunningExecution()
 
   await loadEnvironments(flow.value)
   await nextTick()
@@ -87,6 +157,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (clockTimer) window.clearInterval(clockTimer)
+  if (reconcileTimer) window.clearInterval(reconcileTimer)
   try { graph?.dispose() } catch { /* ignore */ }
   graph = null
 })
@@ -128,6 +200,23 @@ async function runFlow() {
     ElMessage.success('开始执行，注意画布上的发光节点')
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.error || '启动执行失败')
+  }
+}
+
+/**
+ * 接上进行中的执行：页面刷新 / 从别的页面回到画布时，把实时通道接回同一次执行，
+ * 这样状态条上的耗时会接着走、等待人工确认也能继续操作。
+ */
+async function attachRunningExecution() {
+  if (!flow.value?.id) return
+  try {
+    const list = await api.listExecutions({ flowId: flow.value.id })
+    const live = (list || []).find((e: any) => e.status === 'running' || e.status === 'paused')
+    if (!live) return
+    await exec.connect(live.id, live.flowName || flow.value.name, flow.value.id)
+    ElMessage.info(`已接上进行中的执行 ${String(live.id).slice(0, 8)}`)
+  } catch {
+    // 接不上不影响手动执行
   }
 }
 
@@ -280,7 +369,9 @@ async function removeNode() {
           </el-option>
         </el-select>
         <el-button text size="small" @click="router.push('/environments')">管理</el-button>
-        <el-button type="success" :disabled="running" @click="runFlow">▶ 执行流程</el-button>
+        <el-button type="success" :disabled="running" :loading="running" @click="runFlow">
+          {{ running ? '执行中' : '▶ 执行流程' }}
+        </el-button>
         <el-button v-if="exec.status === 'paused'" type="warning" @click="togglePause">继续</el-button>
         <el-button v-else :disabled="!running" @click="togglePause">暂停</el-button>
         <el-button type="danger" :disabled="!running" @click="stopRun">停止</el-button>
@@ -293,6 +384,12 @@ async function removeNode() {
       <span class="legend"><i class="lg lg-failed" />失败</span>
       <span class="legend"><i class="lg lg-waiting" />等待人工确认</span>
       <span class="legend"><i class="lg lg-skipped" />跳过</span>
+      <span v-if="sameFlow && phaseText" class="phase" :class="'phase-' + phaseTone">
+        <i class="phase-dot" />{{ phaseText }}
+      </span>
+      <span v-if="sameFlow" class="elapsed" :class="{ live: running }">
+        {{ running ? '已执行' : '总耗时' }} <b>{{ elapsedText }}</b>
+      </span>
       <span v-if="exec.executionId && exec.flowId === flow.id" class="exec-id">
         本次执行：{{ exec.executionId.slice(0, 8) }}
       </span>
@@ -308,6 +405,15 @@ async function removeNode() {
         查看结果汇总
       </el-button>
       <span class="muted" style="margin-left: auto">拖拽节点调整位置；点击连线编辑流转条件；改动后记得保存</span>
+    </div>
+
+    <div v-if="sameFlow && exec.waitingNodeId" class="fp-waiting-bar">
+      <span class="waiting-icon">⏳</span>
+      <span>正在等待人工确认：<b>{{ waitingNodeName }}</b></span>
+      <span class="waiting-tip">请在右侧「步骤详情」点击「通过 / 不通过」，等待时间也计入总耗时</span>
+      <el-button size="small" type="warning" plain @click="selectedId = exec.waitingNodeId">
+        定位节点
+      </el-button>
     </div>
 
     <div class="fp-body">

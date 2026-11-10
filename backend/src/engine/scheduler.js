@@ -303,6 +303,8 @@ export class RunSession {
         nodes: (this.flow.nodes || []).map((n) => ({ id: n.id, name: n.name })),
         restoredNodes: this.executed.size,
         paused: this.status === 'paused',
+        // 前端据此接续总耗时（续跑不是从 0 重新计时）
+        startedAt: this.startedAt,
       })
       this.log(`检测到未完成会话，已从断点恢复（已完成 ${this.executed.size} 个节点）`, 'warn')
     } else {
@@ -310,6 +312,8 @@ export class RunSession {
         flowId: this.flow.id,
         flowName: this.flow.name,
         nodes: (this.flow.nodes || []).map((n) => ({ id: n.id, name: n.name })),
+        // 前端据此显示「已执行 N s」，断线回放时也能还原真实起点
+        startedAt: this.startedAt,
       })
       this.log(
         `流程「${this.flow.name}」开始执行（${(this.flow.nodes || []).length} 个节点，${
