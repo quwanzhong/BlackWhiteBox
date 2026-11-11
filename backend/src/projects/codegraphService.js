@@ -10,6 +10,8 @@
  * - 图缺失或签名与当前扫描不一致 → `stale`，接口层必须显式返回状态，
  *   不能把「还没分析」渲染成「0 条调用链」。
  */
+import fs from 'node:fs'
+import path from 'node:path'
 import { store } from '../store.js'
 import {
   buildFromProject,
@@ -148,6 +150,71 @@ export function readGraph(id) {
   const status = graphStatus(id)
   const graph = graphOrNull(id)
   return { state: status.state, reason: status.reason, graph }
+}
+
+const SOURCE_RADIUS = 12
+const MAX_SOURCE_BYTES = 2 * 1024 * 1024
+
+function sourceError(message) {
+  const err = new Error(message)
+  err.status = 400
+  return err
+}
+
+/**
+ * 源码定位（W1-3「点击跳到 文件:行」的服务端部分）。
+ *
+ * 安全边界：**只允许读本次图里的文件**（`graph.nodes.files` 白名单），
+ * 再做一次真实路径校验，确保拼接后的路径仍落在工程目录内。
+ * 不提供任意路径读取能力，避免把「看源码」变成文件系统浏览器。
+ *
+ * 返回行窗口而不是整个文件：几 MB 的 SFC 没必要一次塞给前端。
+ */
+export function readSource(id, input = {}) {
+  const project = requireProject(id)
+  const status = graphStatus(id)
+  const file = String(input.file || '').replace(/\\/g, '/').replace(/^\.\//, '')
+  const requestedLine = Math.floor(Number(input.line) || 1)
+  const radius = Math.max(0, Math.min(Number(input.radius) || SOURCE_RADIUS, 80))
+  const graph = graphOrNull(id)
+  if (!graph) {
+    return {
+      state: status.state,
+      reason: status.reason,
+      file,
+      line: requestedLine,
+      lines: [],
+      notice: '调用链尚未生成，无法定位源码',
+    }
+  }
+  const known = new Set((graph.nodes?.files || []).map((f) => f.id))
+  if (!file || !known.has(file)) throw sourceError('文件不在本次调用链图内，请重新扫描后再定位')
+
+  const root = path.resolve(project.codePath || '')
+  const abs = path.resolve(root, file)
+  if (abs !== root && !abs.startsWith(root + path.sep)) throw sourceError('文件路径越界')
+  if (!fs.existsSync(abs)) throw sourceError('源文件已不存在，请重新扫描')
+  const stat = fs.statSync(abs)
+  if (!stat.isFile()) throw sourceError('目标不是文件')
+  if (stat.size > MAX_SOURCE_BYTES) throw sourceError('源文件超过 2 MB，请直接在编辑器中打开')
+
+  const all = fs.readFileSync(abs, 'utf8').split(/\r?\n/)
+  const totalLines = all.length
+  const line = Math.max(1, Math.min(requestedLine, totalLines))
+  const startLine = Math.max(1, line - radius)
+  const endLine = Math.min(totalLines, line + radius)
+  return {
+    state: status.state,
+    reason: status.reason,
+    file,
+    absolutePath: abs,
+    line,
+    startLine,
+    endLine,
+    totalLines,
+    truncated: startLine > 1 || endLine < totalLines,
+    lines: all.slice(startLine - 1, endLine).map((text, i) => ({ nr: startLine + i, text })),
+  }
 }
 
 export { removeGraph }

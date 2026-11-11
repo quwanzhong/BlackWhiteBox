@@ -2152,10 +2152,33 @@ check(
   `parseErrors=${w1Gaps.parseErrors?.length} noEntry=${w1Gaps.noEntryCalls?.length} unresolved=${w1Gaps.unresolved?.length}`
 )
 
+const w1Source = await (
+  await get(
+    `/api/projects/${w1Project.id}/codegraph/source?file=${encodeURIComponent('src/api/trsCheckBill.js')}&line=4&radius=2`
+  )
+).json()
+check(
+  '14.8 源码定位：图内文件返回行窗口并标出目标行（点击可跳 文件:行）',
+  w1Source.line === 4 &&
+    w1Source.startLine === 2 &&
+    w1Source.endLine === 6 &&
+    w1Source.lines?.some((l) => l.nr === 4 && String(l.text).includes('/trsCheckBill/page')),
+  `window=${w1Source.startLine}-${w1Source.endLine}`
+)
+
+const w1BadSource = await get(
+  `/api/projects/${w1Project.id}/codegraph/source?file=${encodeURIComponent('../../secret.txt')}&line=1`
+)
+check(
+  '14.9 源码定位拒绝图外路径：400 且提示不在图内（不把看源码变成文件浏览器）',
+  w1BadSource.status === 400 && /调用链图内/.test((await w1BadSource.json()).error || ''),
+  `status=${w1BadSource.status}`
+)
+
 await post(`/api/projects/${w1Project.id}/scan`, { codePath: w1Root })
 const w1Stale = await (await get(`/api/projects/${w1Project.id}/codegraph`)).json()
 check(
-  '14.8 重新扫描后摘要过期：state=stale / reason=scan-changed（提示重建，而不是继续用旧图）',
+  '14.10 重新扫描后摘要过期：state=stale / reason=scan-changed（提示重建，而不是继续用旧图）',
   w1Stale.state === 'stale' && w1Stale.reason === 'scan-changed' && w1Stale.summary !== null,
   `${w1Stale.state}/${w1Stale.reason}`
 )

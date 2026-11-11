@@ -112,6 +112,17 @@ export const api = {
     http.post(`/projects/${id}/flows`, data).then((r) => r.data),
   projectFlows: (id: string): Promise<any[]> => http.get(`/projects/${id}/flows`).then((r) => r.data),
 
+  // W1 调用链（M3'-2）：接口 ← 源码调用链 ← 页面入口
+  projectCodegraph: (id: string): Promise<any> => http.get(`/projects/${id}/codegraph`).then((r) => r.data),
+  projectCodegraphBuild: (id: string): Promise<any> =>
+    http.post(`/projects/${id}/codegraph`, {}, { timeout: 300000 }).then((r) => r.data),
+  projectCodegraphChains: (id: string, params?: { interfaceId?: string; callId?: string; limit?: number }): Promise<any> =>
+    http.get(`/projects/${id}/codegraph/chains`, { params }).then((r) => r.data),
+  projectCodegraphGaps: (id: string, params?: { limit?: number }): Promise<any> =>
+    http.get(`/projects/${id}/codegraph/gaps`, { params }).then((r) => r.data),
+  projectCodegraphSource: (id: string, params: { file: string; line: number; radius?: number }): Promise<any> =>
+    http.get(`/projects/${id}/codegraph/source`, { params }).then((r) => r.data),
+
   // 环境（M2-1）：baseUrl + 普通变量 + 全局请求头 + 加密密钥（secrets 只回键名）
   listEnvironments: (projectId?: string): Promise<any[]> =>
     http.get('/environments', { params: { projectId } }).then((r) => r.data),

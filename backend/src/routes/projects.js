@@ -20,6 +20,7 @@ import {
   graphStatus,
   listGaps,
   queryChains,
+  readSource,
 } from '../projects/codegraphService.js'
 
 const router = Router()
@@ -27,7 +28,7 @@ const router = Router()
 function fail(res, err) {
   const message = err?.message || '项目操作失败'
   const userFixable = /请先|请填写|不存在|不在|没有|无法|至少|目录|不支持/.test(message)
-  res.status(userFixable ? 400 : 500).json({ error: message })
+  res.status(Number(err?.status) || (userFixable ? 400 : 500)).json({ error: message })
 }
 
 function projectFlows(id) {
@@ -199,6 +200,15 @@ router.get('/:id/codegraph/chains', (req, res) => {
 router.get('/:id/codegraph/gaps', (req, res) => {
   try {
     res.json(listGaps(req.params.id, req.query || {}))
+  } catch (err) {
+    fail(res, err)
+  }
+})
+
+// 源码定位：只允许读图内文件，返回目标行附近的行窗口（W1-3 点击跳转）
+router.get('/:id/codegraph/source', (req, res) => {
+  try {
+    res.json(readSource(req.params.id, req.query || {}))
   } catch (err) {
     fail(res, err)
   }

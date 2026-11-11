@@ -205,6 +205,30 @@ test('codegraph-service: 断链清单暴露未解析调用与解析错误', () =
   assert.ok(gaps.noEntryCalls.some((c) => c.interfaceId === 'POST /system/login'))
 })
 
+test('codegraph-service: 源码定位只读图内文件并返回行窗口，图外路径拒绝', () => {
+  const id = setupProject()
+  service.scanProject(id, { codePath: ROOT })
+  codegraphService.buildProjectGraph(id)
+
+  const source = codegraphService.readSource(id, { file: 'src/api/trsCheckBill.js', line: 4, radius: 2 })
+  assert.equal(source.state, 'fresh')
+  assert.equal(source.line, 4)
+  assert.equal(source.startLine, 2)
+  assert.equal(source.endLine, 6)
+  assert.equal(source.lines.find((l) => l.nr === 4).text.includes('/trsCheckBill/page'), true)
+  assert.equal(source.truncated, true)
+
+  // 行号越界收敛到文件范围；radius 上限 80，不把整文件塞给前端
+  const wide = codegraphService.readSource(id, { file: 'src/api/trsCheckBill.js', line: 999, radius: 500 })
+  assert.equal(wide.line, wide.totalLines)
+  assert.equal(wide.endLine, wide.totalLines)
+  assert.equal(wide.startLine, Math.max(1, wide.totalLines - 80))
+
+  // 白名单：既不能读工程外的相对路径，也不能读绝对路径
+  assert.throws(() => codegraphService.readSource(id, { file: '../../secret.txt', line: 1 }), /不在本次调用链图内/)
+  assert.throws(() => codegraphService.readSource(id, { file: '/etc/passwd', line: 1 }), /不在本次调用链图内/)
+})
+
 test('codegraph-service: 调用方查询与原始图读取带状态', () => {
   const id = setupProject()
   service.scanProject(id, { codePath: ROOT })
@@ -238,6 +262,12 @@ test('codegraph-service: 未构建时查询显式返回 stale + 提示，不用�
   assert.equal(gaps.state, 'stale')
   assert.deepEqual(gaps.noEntryCalls, [])
   assert.deepEqual(gaps.parseErrors, [])
+
+  // 未构建时不能读源码，但也不能报「文件不存在」误导用户
+  const source = codegraphService.readSource(id, { file: 'src/api/trsCheckBill.js', line: 3 })
+  assert.equal(source.state, 'stale')
+  assert.deepEqual(source.lines, [])
+  assert.ok(source.notice)
 })
 
 test('codegraph-service: 重新扫描后摘要过期，删除项目同步清理旁路图', () => {

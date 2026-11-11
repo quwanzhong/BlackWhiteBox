@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import { useApifoxStore } from '../stores/apifox'
 import FolderPicker from '../components/FolderPicker.vue'
+import CodeGraphPanel from '../components/CodeGraphPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -365,6 +366,7 @@ const matchTag = (rate?: number) => (rate >= 90 ? 'success' : rate >= 60 ? 'warn
                 <div class="ch-title">接口调用点（按源码文件 / 行号顺序）</div>
                 <div class="ch-actions">
                   <el-checkbox v-model="showUnmatchedOnly">只看未匹配</el-checkbox>
+                  <el-button size="small" @click="activeTab = 'codegraph'">查看调用链 →</el-button>
                   <el-button size="small" @click="activeTab = 'business'">下一步：业务功能 →</el-button>
                 </div>
               </div>
@@ -475,6 +477,13 @@ const matchTag = (rate?: number) => (rate >= 90 ? 'success' : rate >= 60 ? 'warn
               </div>
             </div>
             <div v-else class="pd-empty">还没有生成流程，勾选上面的业务功能后生成。</div>
+          </div>
+        </el-tab-pane>
+
+        <!-- ============ 4. 接口调用链（W1 · M3'-2） ============ -->
+        <el-tab-pane label="④ 接口调用链" name="codegraph">
+          <div class="panel">
+            <CodeGraphPanel :project-id="id" :has-scan="Boolean(scan)" @go-scan="activeTab = 'scan'" />
           </div>
         </el-tab-pane>
       </el-tabs>
